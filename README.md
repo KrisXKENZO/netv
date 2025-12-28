@@ -114,8 +114,7 @@ For peak FFMPEG performance, Chromecast (requires HTTPS), and auto-start:
 ./tools/install-ffmpeg.sh
 
 # 4. Install systemd service
-sudo ./tools/install-netv.sh              # default port 8000
-sudo ./tools/install-netv.sh --port 9000  # custom port
+sudo ./tools/install-netv.sh # default port=8000 or --port 9000 
 ```
 
 Manage with:
