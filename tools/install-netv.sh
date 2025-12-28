@@ -1,25 +1,48 @@
 #!/bin/bash
 # Install netv systemd service
-# Prerequisites: uv, install-letsencrypt.sh
+# Prerequisites: uv (install time only), install-letsencrypt.sh
+#
+# Usage: sudo ./install-netv.sh [--port PORT]
+#   --port PORT  Port to listen on (default: 8000)
 set -e
 
 IPTV_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 USER="${SUDO_USER:-$USER}"
-HOME_DIR=$(eval echo "~$USER")
+PORT=8000
+
+# Parse arguments
+while [[ $# -gt 0 ]]; do
+    case $1 in
+        --port)
+            PORT="$2"
+            shift 2
+            ;;
+        *)
+            echo "Unknown option: $1"
+            echo "Usage: sudo $0 [--port PORT]"
+            exit 1
+            ;;
+    esac
+done
 
 # Validate
 if [ "$USER" = "root" ]; then
     echo "Error: Run with sudo, not as root directly"
-    echo "Usage: sudo $0"
+    echo "Usage: sudo $0 [--port PORT]"
     exit 1
 fi
 
-if ! command -v uv &> /dev/null; then
-    echo "Error: uv not found. Install from https://docs.astral.sh/uv/"
+# Find uv in user's environment (only needed at install time)
+UV_PATH=$(su - "$USER" -c "which uv" 2>/dev/null)
+if [ -z "$UV_PATH" ]; then
+    echo "Error: uv not found for user $USER. Install with:"
+    echo "  curl -LsSf https://astral.sh/uv/install.sh | sh"
+    echo "See: https://docs.astral.sh/uv/"
     exit 1
 fi
 
-UV_PATH=$(which uv)
+echo "=== Syncing dependencies ==="
+su - "$USER" -c "cd '$IPTV_DIR' && '$UV_PATH' sync"
 
 if [ ! -d /etc/letsencrypt/live ]; then
     echo "Warning: Let's Encrypt not configured. Run install-letsencrypt.sh first for HTTPS."
@@ -29,7 +52,7 @@ else
     HTTPS_FLAG="--https"
 fi
 
-echo "=== Installing netv for user: $USER ==="
+echo "=== Installing netv for user: $USER (port $PORT) ==="
 
 echo "=== Adding $USER to ssl-cert group ==="
 sudo usermod -aG ssl-cert "$USER"
@@ -46,7 +69,7 @@ Type=simple
 User=$USER
 Group=ssl-cert
 WorkingDirectory=$IPTV_DIR
-ExecStart=$UV_PATH --quiet run --no-sync ./main.py $HTTPS_FLAG
+ExecStart=$IPTV_DIR/.venv/bin/python ./main.py --port $PORT $HTTPS_FLAG
 Restart=on-failure
 RestartSec=5
 
