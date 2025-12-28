@@ -55,16 +55,45 @@ through their IPTV providers.
 
 ## Quick Start
 
+Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/):
+
 ```bash
 git clone https://github.com/jvdillon/netv.git
 cd netv
-chmod +x main.py
-./main.py --port 8000  # --https
+uv run ./main.py --port 8000  # --https
+```
+
+Or with pip:
+
+```bash
+pip install .
+./main.py --port 8000
 ```
 
 Open `http://localhost:8000`, create an admin account, and add your IPTV source.
 
 ## Installation
+
+### Docker
+
+```bash
+docker compose up -d                       # http://localhost:8000
+NETV_PORT=9000 docker compose up -d        # custom port
+NETV_HTTPS=1 docker compose up -d          # enable HTTPS (mount certs first)
+```
+
+First build takes ~15-20 min (compiles FFmpeg with all HW acceleration).
+
+For hardware transcoding, edit `docker-compose.yml`:
+
+```yaml
+# VAAPI (Intel/AMD)
+devices:
+  - /dev/dri:/dev/dri
+
+# NVIDIA (requires nvidia-container-toolkit)
+# Use: docker compose --profile nvidia up -d
+```
 
 ### Debian/Ubuntu
 

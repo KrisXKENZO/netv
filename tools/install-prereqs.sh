@@ -1,11 +1,14 @@
 #!/bin/bash
-# Install prerequisites for netv on Debian/Ubuntu
-# Run this first on a clean system
+# Install prerequisites for netv
 set -e
 
-echo "=== Installing system packages ==="
-sudo apt update
-sudo apt install -y git curl
+echo "=== Checking prerequisites ==="
+for cmd in git curl; do
+    if ! command -v $cmd &> /dev/null; then
+        echo "Error: $cmd not found. Install it with your package manager."
+        exit 1
+    fi
+done
 
 echo "=== Installing uv ==="
 if command -v uv &> /dev/null; then

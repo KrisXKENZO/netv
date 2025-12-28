@@ -96,7 +96,7 @@ class TestSettings:
         settings = cache_module.load_server_settings()
         assert settings["sources"] == []
         assert settings["transcode_mode"] == "auto"
-        assert settings["transcode_hw"] == "nvidia"
+        assert settings["transcode_hw"] in ("nvidia", "vaapi", "qsv", "software")
         assert settings["probe_movies"] is True
 
     def test_save_and_load_settings(self, cache_module):

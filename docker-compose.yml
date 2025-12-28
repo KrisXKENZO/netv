@@ -1,0 +1,50 @@
+# Docker Compose for neTV
+#
+# Usage:
+#   docker compose up -d              # Software transcoding
+#   docker compose up -d              # VAAPI: uncomment devices below
+#   docker compose --profile nvidia up -d  # NVIDIA GPU
+#
+# Build:
+#   docker compose build              # First build takes ~15-20 min
+
+services:
+  netv:
+    build: .
+    image: netv
+    container_name: netv
+    ports:
+      - "${NETV_PORT:-8000}:8000"
+    environment:
+      - NETV_PORT=8000
+      - NETV_HTTPS=${NETV_HTTPS:-}
+    volumes:
+      - ./cache:/app/cache
+      # For HTTPS, also mount your certificates:
+      # - /etc/letsencrypt:/etc/letsencrypt:ro
+    restart: unless-stopped
+
+    # --- Hardware Acceleration ---
+    # Uncomment ONE of the following based on your hardware:
+
+    # VAAPI (Intel/AMD GPU)
+    # devices:
+    #   - /dev/dri:/dev/dri
+    # group_add:
+    #   - video
+    #   - render
+
+  # NVIDIA GPU (use: docker compose --profile nvidia up -d)
+  netv-nvidia:
+    extends:
+      service: netv
+    container_name: netv
+    profiles:
+      - nvidia
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -165,6 +165,14 @@ def detect_encoders() -> dict[str, bool]:
 AVAILABLE_ENCODERS = detect_encoders()
 
 
+def _default_encoder() -> str:
+    """Return first available encoder, preferring hardware."""
+    for enc in ("nvidia", "vaapi", "qsv", "software"):
+        if AVAILABLE_ENCODERS.get(enc):
+            return enc
+    return "software"
+
+
 @dataclass(slots=True)
 class Source:
     id: str
@@ -186,7 +194,7 @@ def load_server_settings() -> dict[str, Any]:
     else:
         data = {}
     data.setdefault("transcode_mode", "auto")
-    data.setdefault("transcode_hw", "nvidia")
+    data.setdefault("transcode_hw", _default_encoder())
     data.setdefault("vod_transcode_cache_mins", 60)
     data.setdefault("probe_movies", True)
     data.setdefault("probe_series", False)

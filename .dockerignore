@@ -1,0 +1,33 @@
+# Git
+.git/
+.gitignore
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+.ruff_cache/
+.pytest_cache/
+uv.lock
+
+# App data (user-specific)
+cache/
+settings.json
+*.pem
+
+# Tools (not needed in container)
+tools/
+
+# Tests
+*_test.py
+conftest.py
+
+# Docs
+*.md
+screenshots/
+LICENSE
+
+# Docker
+Dockerfile
+docker-compose.yml
+.dockerignore
