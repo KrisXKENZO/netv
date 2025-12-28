@@ -55,7 +55,7 @@ through their IPTV providers.
 ## Quick Start
 
 ```bash
-git clone https://github.com/youruser/netv.git
+git clone https://github.com/jvdillon/netv.git
 cd netv
 chmod +x main.py
 ./main.py
