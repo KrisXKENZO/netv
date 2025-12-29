@@ -24,7 +24,7 @@ sudo apt install -y \
   libfdk-aac-dev \
   libffmpeg-nvenc-dev \
   libfreetype6-dev \
-  libgnutls28-dev \
+  libssl-dev \
   liblzma-dev \
   liblzo2-dev \
   libmp3lame-dev \
@@ -120,7 +120,7 @@ CONFIGURE_CMD=(
   --bindir="$HOME/.local/bin"
   --enable-gpl
   --enable-version3
-  --enable-gnutls
+  --enable-openssl
   --enable-libaom
   --enable-libass
   --enable-libfdk-aac
