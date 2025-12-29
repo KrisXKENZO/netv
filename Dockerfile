@@ -222,6 +222,11 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY --from=builder /opt/bin/ffmpeg /usr/local/bin/
 COPY --from=builder /opt/bin/ffprobe /usr/local/bin/
 
+# Verify all shared libraries are available (fail build early if not)
+RUN ldd /usr/local/bin/ffmpeg | grep -q "not found" && \
+    { echo "Missing libraries:"; ldd /usr/local/bin/ffmpeg | grep "not found"; exit 1; } || \
+    echo "All ffmpeg dependencies satisfied"
+
 # App setup
 WORKDIR /app
 COPY pyproject.toml README.md ./
