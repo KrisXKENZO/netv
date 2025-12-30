@@ -61,6 +61,7 @@ sudo apt install -y \
   libunistring-dev \
   libva-dev \
   libvdpau-dev \
+  libvpl-dev \
   libvorbis-dev \
   libvpx-dev \
   libx264-dev \
@@ -173,6 +174,7 @@ CONFIGURE_CMD=(
   --enable-libsoxr
   --enable-libsrt
   --enable-vaapi
+  --enable-libvpl
   --enable-nonfree
   $CUDA_FLAGS
 )

@@ -58,6 +58,7 @@ RUN apt-get update && apt-get install -y wget gnupg && \
     libtool \
     libva-dev \
     libvdpau-dev \
+    libvpl-dev \
     libvorbis-dev \
     libvpx-dev \
     libx264-dev \
@@ -149,6 +150,7 @@ RUN wget -O ffmpeg-snapshot.tar.bz2 https://ffmpeg.org/releases/ffmpeg-snapshot.
         --enable-libsoxr \
         --enable-libsrt \
         --enable-vaapi \
+        --enable-libvpl \
         --enable-cuda-nvcc \
         --enable-nvenc \
         --enable-cuvid \

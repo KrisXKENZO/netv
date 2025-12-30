@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import math
 import pathlib
 import re
 import shutil
@@ -624,6 +625,18 @@ def _build_video_args(
                 vf = f"yadif=1,scale=-2:{scale_expr},format=nv12,hwupload"
             else:
                 vf = "yadif=1,format=nv12,hwupload"
+        # Annoyingly, VAAPI on Intel only supports CQP (constant QP) mode, not
+        # bitrate mode.  Our UI assumes bitrate specificity. To bridge this, we
+        # will map bitrate to QP using log-linear approximation based on rough
+        # estimates (from Googling):
+        #   QP 18-24 ==> 8-15 Mbps
+        #   QP 25-30 ==> 4-8 Mbps
+        #   QP 30-35 ==> 2-4 Mbps
+        # Formula: QP = 38 - 7 * ln(bitrate_mbps), clamped to [18, 40]
+        # Warning: This is really just a  wild guess. The actual bitrate
+        # depends on the encoder and the content.
+        bitrate_mbps = float(max_bitrate.rstrip("M")) if max_bitrate.endswith("M") else 6.0
+        qp = int(max(18, min(40, 38 - 7 * math.log(bitrate_mbps))))
         cmd.extend(
             [
                 "-vf",
@@ -632,8 +645,10 @@ def _build_video_args(
                 "/dev/dri/renderD128",
                 "-c:v",
                 "h264_vaapi",
-                "-b:v",
-                max_bitrate,
+                "-rc_mode",
+                "CQP",
+                "-qp",
+                str(qp),
                 "-g",
                 "60",
             ]
