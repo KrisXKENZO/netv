@@ -22,8 +22,8 @@ if ! dpkg -l cuda-keyring 2>/dev/null | grep -q ^ii; then
   sudo apt-get update
 fi
 
-# Get latest CUDA version
-CUDA_VERSION=$(apt-cache search '^cuda-nvcc-[0-9]' | sed 's/cuda-nvcc-//' | cut -d' ' -f1 | sort -V | tail -1)
+# Get CUDA version (override with CUDA_VERSION env var for older GPUs, e.g., CUDA_VERSION=12-9)
+CUDA_VERSION=${CUDA_VERSION:-$(apt-cache search '^cuda-nvcc-[0-9]' | sed 's/cuda-nvcc-//' | cut -d' ' -f1 | sort -V | tail -1)}
 echo "Using CUDA version: $CUDA_VERSION"
 
 sudo apt install -y \

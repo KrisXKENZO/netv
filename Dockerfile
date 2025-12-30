@@ -14,6 +14,9 @@
 # =============================================================================
 FROM ubuntu:24.04 AS builder
 
+# Override for older GPUs (e.g., --build-arg CUDA_VERSION=12-9 for Maxwell/Pascal)
+ARG CUDA_VERSION=""
+
 ENV DEBIAN_FRONTEND=noninteractive
 ENV FFMPEG_BUILD=/opt/ffmpeg_build
 ENV PATH="/opt/bin:/usr/local/cuda/bin:$PATH"
@@ -69,9 +72,11 @@ RUN apt-get update && apt-get install -y wget gnupg && \
     zlib1g-dev \
     && rm -rf /var/lib/apt/lists/*
 
-# Install CUDA (separate step for dynamic version detection)
+# Install CUDA (uses ARG if set, otherwise auto-detects latest)
 RUN apt-get update && \
-    CUDA_VERSION=$(apt-cache search '^cuda-nvcc-[0-9]' | sed 's/cuda-nvcc-//' | cut -d' ' -f1 | sort -V | tail -1) && \
+    if [ -z "$CUDA_VERSION" ]; then \
+      CUDA_VERSION=$(apt-cache search '^cuda-nvcc-[0-9]' | sed 's/cuda-nvcc-//' | cut -d' ' -f1 | sort -V | tail -1); \
+    fi && \
     echo "Installing CUDA version: $CUDA_VERSION" && \
     apt-get install -y cuda-nvcc-$CUDA_VERSION cuda-cudart-dev-$CUDA_VERSION && \
     CUDA_DIR=$(ls -d /usr/local/cuda-* 2>/dev/null | head -1) && \
