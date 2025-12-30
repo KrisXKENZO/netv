@@ -234,7 +234,7 @@
       const s = ccStyleSettings;
       preview.style.color = hexToRgba(s.cc_color || '#ffffff', 1);
       preview.style.textShadow = s.cc_shadow || '0 0 4px black, 0 0 4px black';
-      preview.style.backgroundColor = hexToRgba(s.cc_bg || '#000000', s.cc_bg_opacity || 0.75);
+      preview.style.backgroundColor = hexToRgba(s.cc_bg || '#000000', s.cc_bg_opacity ?? 0.5);
       preview.style.fontSize = s.cc_size || '1em';
       preview.style.fontFamily = s.cc_font || 'inherit';
     }
