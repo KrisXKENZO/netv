@@ -642,10 +642,11 @@ def _build_sr_filter(sr_mode: str, source_height: int, target_height: int) -> st
     if not apply_sr:
         return ""
 
-    # Build SR filter: dnn_processing for upscale, then Area scale to target
-    # The model outputs 4x the input size, so we scale down to target with Area
-    sr_filter = f"dnn_processing=dnn_backend=torch:model={_sr_model_path}"
-    # After 4x SR, scale to target using Area algorithm (best for downscaling)
+    # Build SR filter chain:
+    # 1. Convert to RGB (model expects 3-channel RGB input)
+    # 2. Apply SR via dnn_processing (outputs 4x resolution)
+    # 3. Scale to target using Area algorithm (best for downscaling)
+    sr_filter = f"format=rgb24,dnn_processing=dnn_backend=torch:model={_sr_model_path}"
     if target_height:
         sr_filter += f",scale=-2:{target_height}:flags=area"
     return sr_filter
