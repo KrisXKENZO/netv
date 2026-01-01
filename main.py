@@ -128,6 +128,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Initialize EPG database
     epg_db.init(CACHE_DIR)
 
+    # Prune expired EPG data (keep 24h buffer for "what was just on")
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
+    pruned = epg_db.prune_old_programs(cutoff)
+    if pruned:
+        log.info("Pruned %d expired EPG programs", pruned)
+
     # Initialize transcoding module with settings callback
     ffmpeg_command.init(load_server_settings)
 
@@ -453,6 +459,13 @@ def _fetch_all_epg(epg_urls: list[tuple[str, int, str]]) -> int:
         for future in concurrent.futures.as_completed(futures):
             _, count = future.result()
             total += count
+
+    # Prune expired programs (keep 24h buffer)
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
+    pruned = epg_db.prune_old_programs(cutoff)
+    if pruned:
+        log.info("Pruned %d expired EPG programs", pruned)
+
     log.info("EPG fetch complete: %d programs total", total)
     return total
 
