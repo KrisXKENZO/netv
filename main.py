@@ -1989,7 +1989,9 @@ async def settings_delete_source(
     settings = load_server_settings()
     settings["sources"] = [s for s in settings.get("sources", []) if s["id"] != source_id]
     save_server_settings(settings)
-    clear_all_caches()
+    # Clear all caches including EPG data for this source
+    epg_db.clear_source(source_id)
+    clear_all_file_caches()
     return RedirectResponse("/settings", status_code=303)
 
 
