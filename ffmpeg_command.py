@@ -724,19 +724,18 @@ def build_hls_ffmpeg_cmd(
     deinterlace_fallback: bool | None = None,
 ) -> list[str]:
     """Build ffmpeg command for HLS transcoding."""
-    # Check if we can copy streams directly (VOD with compatible codecs)
+    # Check if we can copy streams directly (compatible codecs, no processing needed)
     max_h = _MAX_RES_HEIGHT.get(max_resolution, 9999)
     needs_scale = media_info and media_info.height > max_h
     copy_video = bool(
-        is_vod
-        and media_info
+        media_info
         and media_info.video_codec == "h264"
         and media_info.pix_fmt == "yuv420p"
         and not needs_scale
+        and not media_info.interlaced  # Can't copy if deinterlacing needed
     )
     copy_audio = bool(
-        is_vod
-        and media_info
+        media_info
         and media_info.audio_codec == "aac"
         and media_info.audio_channels <= 2
         and media_info.audio_sample_rate in (44100, 48000)
