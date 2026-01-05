@@ -374,15 +374,20 @@
     }
   });
 
-  // Save/restore scroll position
-  const scrollKey = 'guide_scroll_{{ offset }}_{{ cats_param }}';
+  // Save/restore scroll position (persists across reloads and navigation)
+  const scrollKey = 'guide_scroll';
   const gridContainer = document.querySelector('.overflow-y-auto');
   if (gridContainer) {
     const saved = sessionStorage.getItem(scrollKey);
     if (saved) gridContainer.scrollTop = parseInt(saved);
-    document.querySelectorAll('a[href^="/play"]').forEach(a => {
-      a.addEventListener('click', () => sessionStorage.setItem(scrollKey, gridContainer.scrollTop));
+    // Save on scroll (debounced)
+    let scrollTimer;
+    gridContainer.addEventListener('scroll', () => {
+      clearTimeout(scrollTimer);
+      scrollTimer = setTimeout(() => sessionStorage.setItem(scrollKey, gridContainer.scrollTop), 100);
     });
+    // Save before page unload (catches all navigation/reloads)
+    window.addEventListener('beforeunload', () => sessionStorage.setItem(scrollKey, gridContainer.scrollTop));
   }
 
   // Initial focus
