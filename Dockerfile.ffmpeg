@@ -23,7 +23,7 @@ FROM ubuntu:24.04 AS builder
 # Build configuration - these are passed to install-ffmpeg.sh via environment
 ARG BUILD_NVIDIA=1
 ARG BUILD_LIBPLACEBO=1
-ARG BUILD_X265=1
+ARG BUILD_LIBX265=1
 ARG BUILD_LIBAOM=1
 ARG BUILD_LIBWEBP=1
 ARG BUILD_LIBVPL=1
@@ -42,7 +42,7 @@ ENV BIN_DIR=/opt/bin
 # Pass build args to script via env
 ENV BUILD_NVIDIA=${BUILD_NVIDIA}
 ENV BUILD_LIBPLACEBO=${BUILD_LIBPLACEBO}
-ENV BUILD_X265=${BUILD_X265}
+ENV BUILD_LIBX265=${BUILD_LIBX265}
 ENV BUILD_LIBAOM=${BUILD_LIBAOM}
 ENV BUILD_LIBWEBP=${BUILD_LIBWEBP}
 ENV BUILD_LIBVPL=${BUILD_LIBVPL}
@@ -68,7 +68,7 @@ FROM ubuntu:24.04
 ARG BUILD_DATE
 ARG FFMPEG_VERSION=snapshot
 ARG BUILD_LIBPLACEBO=1
-ARG BUILD_X265=1
+ARG BUILD_LIBX265=1
 ARG BUILD_LIBAOM=1
 ARG BUILD_LIBWEBP=1
 ARG BUILD_LIBVPL=1
@@ -107,7 +107,7 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
     --mount=type=cache,target=/var/lib/apt,sharing=locked \
     APT_PKGS="" && \
-    [ "$BUILD_X265" != "1" ] && APT_PKGS="$APT_PKGS libx265-199" ; \
+    [ "$BUILD_LIBX265" != "1" ] && APT_PKGS="$APT_PKGS libx265-199" ; \
     [ "$BUILD_LIBAOM" != "1" ] && APT_PKGS="$APT_PKGS libaom3" ; \
     [ "$BUILD_LIBWEBP" != "1" ] && APT_PKGS="$APT_PKGS libwebp7 libwebpmux3" ; \
     [ "$BUILD_LIBVPL" != "1" ] && APT_PKGS="$APT_PKGS libvpl2" ; \

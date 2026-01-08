@@ -31,7 +31,7 @@ set -e
 # Optional build components (set to 0 to use apt package instead)
 BUILD_NVIDIA=${BUILD_NVIDIA:-1}          # NVENC/NVDEC hardware encoding/decoding
 BUILD_LIBPLACEBO=${BUILD_LIBPLACEBO:-1}  # GPU HDR tone mapping (requires Vulkan SDK)
-BUILD_X265=${BUILD_X265:-1}              # H.265/HEVC encoder (apt: 3.5, latest: 4.1)
+BUILD_LIBX265=${BUILD_LIBX265:-1}        # H.265/HEVC encoder (apt: 3.5, latest: 4.1)
 BUILD_LIBAOM=${BUILD_LIBAOM:-1}          # AV1 reference codec (apt: 3.8, latest: 3.13)
 BUILD_LIBWEBP=${BUILD_LIBWEBP:-1}        # WebP image codec (apt: 1.3, latest: 1.6)
 BUILD_LIBVPL=${BUILD_LIBVPL:-1}          # Intel QuickSync (apt: 2023.3, latest: 2.16)
@@ -105,7 +105,7 @@ APT_PACKAGES=(
     zlib1g-dev
 )
 # Add apt packages for libraries we're not building from source
-[ "$BUILD_X265" != "1" ] && APT_PACKAGES+=(libx265-dev)
+[ "$BUILD_LIBX265" != "1" ] && APT_PACKAGES+=(libx265-dev)
 [ "$BUILD_LIBAOM" != "1" ] && APT_PACKAGES+=(libaom-dev)
 [ "$BUILD_LIBWEBP" != "1" ] && APT_PACKAGES+=(libwebp-dev)
 [ "$BUILD_LIBVPL" != "1" ] && APT_PACKAGES+=(libvpl-dev)
@@ -213,7 +213,7 @@ fi
 
 # libx265 (H.265/HEVC encoder)
 # Note: x265's cmake doesn't reliably install x265.pc, so we create it manually
-if [ "$BUILD_X265" = "1" ]; then
+if [ "$BUILD_LIBX265" = "1" ]; then
     cd "$SRC_DIR" &&
     git -C x265_git pull 2>/dev/null || (rm -rf x265_git && git clone --depth 1 https://bitbucket.org/multicoreware/x265_git.git) &&
     cd x265_git/build/linux &&
