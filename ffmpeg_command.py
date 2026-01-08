@@ -575,7 +575,8 @@ def probe_media(
             field_order = stream.get("field_order", "").lower()
             interlaced = field_order in ("tt", "bb", "tb", "bt")
             # Detect 10-bit from pix_fmt (e.g. yuv420p10le, p010le)
-            is_10bit = "10" in pix_fmt
+            # Check for "p10" or "10le/10be" to avoid false positive on yuv410p
+            is_10bit = "p10" in pix_fmt or "10le" in pix_fmt or "10be" in pix_fmt
             # Detect HDR from color_transfer (PQ = smpte2084, HLG = arib-std-b67)
             color_transfer = stream.get("color_transfer", "").lower()
             is_hdr = color_transfer in ("smpte2084", "arib-std-b67")
@@ -713,16 +714,19 @@ def _build_video_args(
             # Software decode, upload to GPU for scaling/encoding
             pre = []
             scale = f"scale_cuda=-2:{h}:format=nv12" if h else "scale_cuda=format=nv12"
-            deint = "yadif_cuda=0," if deinterlace else ""  # mode=0 keeps original framerate
             # HDR tone mapping: prefer libplacebo (Vulkan GPU), fall back to CPU zscale+tonemap
+            # Deinterlace before tonemap (CPU yadif) for consistency with hw decode path
             if is_hdr:
+                deint = "yadif=0," if deinterlace else ""  # CPU deinterlace before tonemap
                 if _has_libplacebo_filter():
                     tonemap = "libplacebo=tonemapping=hable:colorspace=bt709:color_primaries=bt709:color_trc=bt709,format=nv12,hwupload_cuda,"
                 else:
                     tonemap = "zscale=t=linear:npl=100,format=gbrpf32le,zscale=p=bt709,tonemap=hable:desat=0,zscale=t=bt709:m=bt709:r=tv,format=nv12,hwupload_cuda,"
+                vf = f"{deint}{tonemap}{scale}"
             else:
+                deint = "yadif_cuda=0," if deinterlace else ""  # GPU deinterlace after upload
                 tonemap = "format=nv12,hwupload_cuda,"
-            vf = f"{tonemap}{deint}{scale}"
+                vf = f"{tonemap}{deint}{scale}"
         preset = "p4" if deinterlace else "p2"
         encoder = "h264_nvenc"
         # Lookahead for better quality, B-frames for compression, AQ for adaptive quantization

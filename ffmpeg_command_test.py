@@ -210,6 +210,93 @@ class TestBuildVideoArgs:
                 quality="high",
             )
 
+    @patch("ffmpeg_command._has_libplacebo_filter", return_value=True)
+    def test_nvidia_hdr_with_libplacebo(self, mock_placebo):
+        """Test NVIDIA HDR uses libplacebo when available."""
+        _, post = _build_video_args(
+            copy_video=False,
+            hw="nvidia",
+            deinterlace=False,
+            use_hw_pipeline=True,
+            max_resolution="1080p",
+            quality="high",
+            is_hdr=True,
+        )
+        vf = post[post.index("-vf") + 1]
+        assert "libplacebo" in vf
+        assert "tonemapping=hable" in vf
+        # Should download from CUDA, process, re-upload
+        assert "hwdownload" in vf
+        assert "hwupload_cuda" in vf
+
+    @patch("ffmpeg_command._has_libplacebo_filter", return_value=False)
+    def test_nvidia_hdr_zscale_fallback(self, mock_placebo):
+        """Test NVIDIA HDR falls back to zscale when libplacebo unavailable."""
+        _, post = _build_video_args(
+            copy_video=False,
+            hw="nvidia",
+            deinterlace=False,
+            use_hw_pipeline=True,
+            max_resolution="1080p",
+            quality="high",
+            is_hdr=True,
+        )
+        vf = post[post.index("-vf") + 1]
+        assert "zscale" in vf
+        assert "tonemap=hable" in vf
+        assert "libplacebo" not in vf
+
+    @patch("ffmpeg_command._has_libplacebo_filter", return_value=True)
+    def test_nvidia_hdr_deinterlace_order(self, mock_placebo):
+        """Test NVIDIA HDR hw decode deinterlaces BEFORE tonemap."""
+        _, post = _build_video_args(
+            copy_video=False,
+            hw="nvidia",
+            deinterlace=True,
+            use_hw_pipeline=True,
+            max_resolution="1080p",
+            quality="high",
+            is_hdr=True,
+        )
+        vf = post[post.index("-vf") + 1]
+        # Deinterlace should come before tonemap in hw decode path
+        deint_pos = vf.find("yadif_cuda")
+        tonemap_pos = vf.find("libplacebo")
+        assert deint_pos < tonemap_pos, f"deinterlace should come before tonemap: {vf}"
+
+    @patch("ffmpeg_command._has_libplacebo_filter", return_value=True)
+    def test_nvidia_sw_hdr_deinterlace_order(self, mock_placebo):
+        """Test NVIDIA HDR sw decode uses CPU deinterlace before tonemap."""
+        _, post = _build_video_args(
+            copy_video=False,
+            hw="nvidia",
+            deinterlace=True,
+            use_hw_pipeline=False,
+            max_resolution="1080p",
+            quality="high",
+            is_hdr=True,
+        )
+        vf = post[post.index("-vf") + 1]
+        # SW decode HDR should use CPU yadif before tonemap
+        assert "yadif=0" in vf  # CPU deinterlace, not yadif_cuda
+        deint_pos = vf.find("yadif=0")
+        tonemap_pos = vf.find("libplacebo")
+        assert deint_pos < tonemap_pos, f"CPU deinterlace should come before tonemap: {vf}"
+
+    def test_vaapi_hdr_tonemap(self):
+        """Test VAAPI HDR uses tonemap_vaapi filter."""
+        _, post = _build_video_args(
+            copy_video=False,
+            hw="vaapi",
+            deinterlace=False,
+            use_hw_pipeline=True,
+            max_resolution="1080p",
+            quality="high",
+            is_hdr=True,
+        )
+        vf = post[post.index("-vf") + 1]
+        assert "tonemap_vaapi" in vf
+
 
 # =============================================================================
 # Audio Args Tests
@@ -630,6 +717,91 @@ class TestProbeMedia:
 
         assert media_info is not None
         assert media_info.interlaced is True
+
+    @pytest.mark.parametrize(
+        "pix_fmt,expected",
+        [
+            ("yuv420p10le", True),  # 10-bit little endian
+            ("yuv420p10be", True),  # 10-bit big endian
+            ("yuv422p10le", True),  # 10-bit 4:2:2
+            ("p010le", True),  # CUDA/VAAPI 10-bit format
+            ("yuv420p", False),  # 8-bit
+            ("yuv410p", False),  # 4:1:0 chroma, NOT 10-bit (was a false positive)
+            ("nv12", False),  # 8-bit NV12
+        ],
+    )
+    def test_probe_10bit_detection(self, pix_fmt: str, expected: bool):
+        """Test 10-bit content detection from pix_fmt."""
+        import ffmpeg_command
+
+        ffmpeg_command._probe_cache.clear()
+
+        probe_output = {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "hevc",
+                    "pix_fmt": pix_fmt,
+                    "height": 2160,
+                },
+            ],
+            "format": {},
+        }
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(probe_output)
+
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch("ffmpeg_command._load_settings", return_value={}),
+        ):
+            media_info, _ = probe_media(f"http://test/{pix_fmt}.mkv")
+
+        assert media_info is not None
+        assert media_info.is_10bit is expected, f"pix_fmt={pix_fmt} should be is_10bit={expected}"
+
+    @pytest.mark.parametrize(
+        "color_transfer,expected",
+        [
+            ("smpte2084", True),  # PQ (HDR10, HDR10+, Dolby Vision)
+            ("arib-std-b67", True),  # HLG
+            ("bt709", False),  # SDR
+            ("bt2020-10", False),  # Wide gamut but not HDR transfer
+            ("", False),  # Unknown/missing
+        ],
+    )
+    def test_probe_hdr_detection(self, color_transfer: str, expected: bool):
+        """Test HDR content detection from color_transfer."""
+        import ffmpeg_command
+
+        ffmpeg_command._probe_cache.clear()
+
+        probe_output = {
+            "streams": [
+                {
+                    "codec_type": "video",
+                    "codec_name": "hevc",
+                    "pix_fmt": "yuv420p10le",
+                    "height": 2160,
+                    "color_transfer": color_transfer,
+                },
+            ],
+            "format": {},
+        }
+
+        mock_result = MagicMock()
+        mock_result.returncode = 0
+        mock_result.stdout = json.dumps(probe_output)
+
+        with (
+            patch("subprocess.run", return_value=mock_result),
+            patch("ffmpeg_command._load_settings", return_value={}),
+        ):
+            media_info, _ = probe_media(f"http://test/{color_transfer or 'unknown'}.mkv")
+
+        assert media_info is not None
+        assert media_info.is_hdr is expected, f"color_transfer={color_transfer} should be is_hdr={expected}"
 
     def test_probe_failure(self):
         """Test probe failure returns None."""

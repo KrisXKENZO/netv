@@ -186,7 +186,11 @@ if [ "$BUILD_LIBDAV1D" = "1" ]; then
     cd "$SRC_DIR" &&
     git -C dav1d pull 2>/dev/null || (rm -rf dav1d && git clone --depth 1 https://code.videolan.org/videolan/dav1d.git) &&
     cd dav1d &&
-    meson setup build --buildtype=release --default-library=static --prefix="$BUILD_DIR" --libdir="$BUILD_DIR/lib" &&
+    if [ -f build/build.ninja ]; then
+        meson setup --reconfigure build --buildtype=release --default-library=static --prefix="$BUILD_DIR" --libdir="$BUILD_DIR/lib"
+    else
+        meson setup build --buildtype=release --default-library=static --prefix="$BUILD_DIR" --libdir="$BUILD_DIR/lib"
+    fi &&
     ninja -C build &&
     ninja -C build install
 fi
