@@ -5,6 +5,9 @@ __pycache__/
 .ruff_cache/
 .pytest_cache/
 
+# Debugging
+**/*.out
+
 # UV
 uv.lock
 

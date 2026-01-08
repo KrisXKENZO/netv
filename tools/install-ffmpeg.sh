@@ -48,21 +48,41 @@ BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
 NPROC=$(nproc)
 
 # NVIDIA CUDA setup
+# CUDA_VERSION options:
+#   "auto"    - (default) use installed CUDA if available, else install latest
+#   "12-9"    - explicit version (e.g., 12-9, 12-6, 13-0)
+CUDA_VERSION=${CUDA_VERSION:-auto}
+
 if [ "$BUILD_NVIDIA" = "1" ]; then
-    # Add CUDA repo if not present
-    if ! dpkg -l cuda-keyring 2>/dev/null | grep -q ^ii; then
-        wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-        sudo dpkg -i cuda-keyring_1.1-1_all.deb
-        rm cuda-keyring_1.1-1_all.deb
-        sudo apt-get update
+    # Check if CUDA is already installed
+    if [ "$CUDA_VERSION" = "auto" ]; then
+        if command -v nvcc &> /dev/null; then
+            # Extract version from nvcc (e.g., "12.9" -> "12-9")
+            NVCC_VERSION=$(nvcc --version | grep -oP 'release \K[0-9]+\.[0-9]+')
+            CUDA_VERSION=$(echo "$NVCC_VERSION" | tr '.' '-')
+            echo "Detected installed CUDA $NVCC_VERSION (using version $CUDA_VERSION)"
+        else
+            echo "No CUDA installed, will install latest from NVIDIA repo"
+        fi
     fi
 
-    # Get CUDA version
-    if [ -z "${CUDA_VERSION:-}" ]; then
-        CUDA_VERSION=$(apt-cache search '^cuda-nvcc-[0-9]' | sed 's/cuda-nvcc-//' | cut -d' ' -f1 | sort -V | tail -1)
-        if [ -z "$CUDA_VERSION" ]; then
-            echo "Error: No CUDA packages found. Install CUDA repo first or set CUDA_VERSION manually." >&2
-            exit 1
+    # Add CUDA repo if not present or if we need to install
+    if [ "$CUDA_VERSION" = "auto" ] || ! command -v nvcc &> /dev/null; then
+        if ! dpkg -l cuda-keyring 2>/dev/null | grep -q ^ii; then
+            wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
+            sudo dpkg -i cuda-keyring_1.1-1_all.deb
+            rm cuda-keyring_1.1-1_all.deb
+            sudo apt-get update
+        fi
+
+        # Get latest CUDA version if still auto
+        if [ "$CUDA_VERSION" = "auto" ]; then
+            CUDA_VERSION=$(apt-cache search '^cuda-nvcc-[0-9]' | sed 's/cuda-nvcc-//' | cut -d' ' -f1 | sort -V | tail -1)
+            if [ -z "$CUDA_VERSION" ]; then
+                echo "Error: No CUDA packages found. Install CUDA repo first or set CUDA_VERSION manually." >&2
+                exit 1
+            fi
+            echo "Will install latest CUDA version: $CUDA_VERSION"
         fi
     fi
     echo "Using CUDA version: $CUDA_VERSION"
@@ -140,13 +160,28 @@ sudo apt-get install -y "${APT_PACKAGES[@]}"
 mkdir -p "$SRC_DIR"
 
 # libx265 (H.265/HEVC encoder)
+# Note: x265's cmake doesn't reliably install x265.pc, so we create it manually
 if [ "$BUILD_X265" = "1" ]; then
     cd "$SRC_DIR" &&
     git -C x265_git pull 2>/dev/null || (rm -rf x265_git && git clone --depth 1 https://bitbucket.org/multicoreware/x265_git.git) &&
     cd x265_git/build/linux &&
     PATH="$BIN_DIR:$PATH" cmake -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX="$BUILD_DIR" -DLIB_INSTALL_DIR="$BUILD_DIR/lib" -DENABLE_SHARED=off ../../source &&
     PATH="$BIN_DIR:$PATH" make -j $NPROC &&
-    make install
+    make install &&
+    mkdir -p "$BUILD_DIR/lib/pkgconfig" &&
+    cat > "$BUILD_DIR/lib/pkgconfig/x265.pc" << PCEOF
+prefix=$BUILD_DIR
+exec_prefix=\${prefix}
+libdir=\${exec_prefix}/lib
+includedir=\${prefix}/include
+
+Name: x265
+Description: H.265/HEVC video encoder
+Version: 4.1
+Libs: -L\${libdir} -lx265
+Libs.private: -lstdc++ -lm -lrt -ldl -lnuma -lpthread
+Cflags: -I\${includedir}
+PCEOF
 fi
 
 # libaom (AV1 reference codec)
@@ -266,18 +301,48 @@ if [ "$BUILD_LIBPLACEBO" = "1" ]; then
 fi
 
 # NVIDIA CUDA flags
+# NVCC_GENCODE options:
+#   "native"  - (default) compile for build machine's GPU via nvidia-smi
+#   "minimum" - lowest arch for CUDA version (sm_52 for <13, sm_75 for 13+)
+#   "75"      - explicit single arch (e.g., 75, 86, 89)
+NVCC_GENCODE=${NVCC_GENCODE:-native}
+
 CUDA_FLAGS=()
-NVCC_GENCODE=""
+NVCC_ARCH=""
 if [ "$BUILD_NVIDIA" = "1" ]; then
     CUDA_FLAGS=(--enable-cuda-nvcc --enable-nvenc --enable-cuvid)
-    # Detect GPU compute capability for optimized nvcc flags
-    if command -v nvidia-smi &> /dev/null; then
-        COMPUTE_CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1)
-        if [ -n "$COMPUTE_CAP" ]; then
-            COMPUTE_CAP_NUM=$(echo $COMPUTE_CAP | tr -d '.')
-            NVCC_GENCODE="-gencode arch=compute_${COMPUTE_CAP_NUM},code=sm_${COMPUTE_CAP_NUM}"
-            echo "Detected NVIDIA GPU with compute capability ${COMPUTE_CAP} (sm_${COMPUTE_CAP_NUM})"
+
+    CUDA_MAJOR="${CUDA_VERSION%%-*}"
+
+    if [ "$NVCC_GENCODE" = "native" ]; then
+        # Detect GPU compute capability
+        if command -v nvidia-smi &> /dev/null; then
+            COMPUTE_CAP=$(nvidia-smi --query-gpu=compute_cap --format=csv,noheader | head -1)
+            if [ -n "$COMPUTE_CAP" ]; then
+                COMPUTE_CAP_NUM=$(echo "$COMPUTE_CAP" | tr -d '.')
+                NVCC_ARCH="-arch=sm_${COMPUTE_CAP_NUM}"
+                echo "CUDA $CUDA_VERSION NVCC_GENCODE=native -> $NVCC_ARCH (detected via nvidia-smi)"
+            else
+                echo "Warning: nvidia-smi found but no GPU detected, falling back to minimum" >&2
+                NVCC_GENCODE="minimum"
+            fi
+        else
+            echo "Warning: nvidia-smi not found, falling back to minimum arch" >&2
+            NVCC_GENCODE="minimum"
         fi
+    fi
+
+    if [ "$NVCC_GENCODE" = "minimum" ]; then
+        if [ "$CUDA_MAJOR" -ge 13 ]; then
+            NVCC_ARCH="-arch=sm_75"
+        else
+            NVCC_ARCH="-arch=sm_52"
+        fi
+        echo "CUDA $CUDA_VERSION NVCC_GENCODE=minimum -> $NVCC_ARCH"
+    elif [ "$NVCC_GENCODE" != "native" ]; then
+        # Explicit arch number
+        NVCC_ARCH="-arch=sm_$NVCC_GENCODE"
+        echo "CUDA $CUDA_VERSION NVCC_GENCODE=$NVCC_GENCODE -> $NVCC_ARCH"
     fi
 fi
 
@@ -352,8 +417,8 @@ if [ "$BUILD_LIBPLACEBO" = "1" ]; then
     CONFIGURE_CMD+=(--enable-vulkan --enable-libplacebo)
 fi
 
-if [ -n "$NVCC_GENCODE" ]; then
-    CONFIGURE_CMD+=(--nvccflags="$NVCC_GENCODE")
+if [ -n "$NVCC_ARCH" ]; then
+    CONFIGURE_CMD+=(--nvccflags="$NVCC_ARCH")
 fi
 
 PATH="$BIN_DIR:$PATH" PKG_CONFIG_PATH="$BUILD_DIR/lib/pkgconfig:$PKG_CONFIG_PATH" "${CONFIGURE_CMD[@]}" && \
