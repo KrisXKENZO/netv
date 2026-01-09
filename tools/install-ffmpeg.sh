@@ -4,27 +4,131 @@
 set -e
 
 # =============================================================================
-# Ubuntu 24.04 apt packages vs upstream (checked 2026-01)
-# Sorted by staleness (most stale first)
+# Potentially Viable Pre-built FFmpeg alternatives
 #
-#   Package      | Apt Version | Latest  | Status
-#   -------------|-------------|---------|----------------------------------
-#   libsvtav1    | 1.7.0       | 3.0.0   | 2 major behind - build from source
-#   libx265      | 3.5         | 4.1     | 1 major behind - build from source
-#   libaom       | 3.8.2       | 3.13.1  | 5 minor behind - build from source
-#   libvpl       | 2023.3.0    | 2.16.0  | old API - build from source
-#   libwebp      | 1.3.2       | 1.6.0   | 3 minor behind - build from source
-#   libdav1d     | 1.4.1       | 1.5.0   | 1 minor behind - build from source
-#   libopus      | 1.4         | 1.5.2   | 1 minor behind
-#   libvpx       | 1.14.1      | 1.15.0  | 1 minor behind
-#   libass       | 0.17.1      | 0.17.3  | 2 patch behind
-#   nasm         | 2.16.01     | 2.16.03 | 2 patch behind
-#   libfdk-aac   | 2.0.2       | 2.0.3   | 1 patch behind
-#   libfreetype  | 2.13.2      | 2.13.3  | 1 patch behind
-#   libx264      | 0.164       | 0.164   | current
-#   libvorbis    | 1.3.7       | 1.3.7   | current
-#   libmp3lame   | 3.100       | 3.100   | current
-#   libfontconfig| 2.15.0      | 2.15.0  | current
+# DOCKER IMAGES
+#   LinuxServer docker-ffmpeg    https://github.com/linuxserver/docker-ffmpeg
+#     - Full hardware accel (NVENC, VAAPI, QSV)
+#     - Comprehensive codec support, builds libva 2.23+ from source
+#     - Used by Dispatcharr, basis for comparison with this script
+#
+# STATIC BINARIES (Linux)
+#   BtbN/FFmpeg-Builds           https://github.com/BtbN/FFmpeg-Builds
+#     - Daily automated builds from git master and release branches
+#     - GPL/LGPL/nonfree variants, static and shared options
+#     - Targets glibc 2.28+ (RHEL 8 / Ubuntu 20.04+)
+#     - CUDA support: sm_52+ (Maxwell and newer)
+#
+#   John Van Sickle              https://johnvansickle.com/ffmpeg/
+#     - Static builds for amd64, i686, armhf, arm64
+#     - GPL v3 licensed, targets kernel 3.2.0+
+#     - Note: static glibc = no DNS resolution (install nscd to fix)
+#
+# STATIC BINARIES (Windows)
+#   gyan.dev                     https://www.gyan.dev/ffmpeg/builds/
+#     - Essentials build: common codecs (Win 7+)
+#     - Full build: all codecs including bluray, opencl (Win 10+)
+#     - Official FFmpeg download page recommendation
+#
+# SPECIALIZED BUILDS
+#   Jellyfin-ffmpeg              https://github.com/jellyfin/jellyfin-ffmpeg
+#     - Modified FFmpeg with Jellyfin-specific patches
+#     - Optimized for media server transcoding
+#     - Ships with Jellyfin packages and Docker images
+#     - Recommended only for Jellyfin; other apps should use standard builds
+#
+# =============================================================================
+
+# =============================================================================
+# FFmpeg library reference (checked 2026-01)
+#
+# Priority: high    = essential for most workflows
+#           med     = useful for specific workflows
+#           low     = niche use cases
+#           subsumed= functionality covered by another library we use
+#           legacy  = outdated, superseded by newer codecs
+#
+# Enable: src = built from source, apt = use apt package, - = not enabled
+#
+#   Library          | Build  | Pri      | Apt Ver | Latest  | Description
+#   -----------------|--------|----------|---------|---------|---------------------------
+#   VIDEO CODECS
+#   libx264          | src    | high     | 0.164   | 0.165   | H.264/AVC encoder (8/10-bit)
+#   libx265          | src    | high     | 3.5     | 4.1     | H.265/HEVC encoder (8/10/12-bit)
+#   libsvtav1        | src    | high     | 1.7.0   | 3.0.2   | AV1 encoder (fast, scalable)
+#   libaom           | src    | high     | 3.8.2   | 3.13.1  | AV1 reference encoder/decoder
+#   libdav1d         | src    | high     | 1.4.1   | 1.5.3   | AV1 decoder (fastest)
+#   libvpx           | apt    | high     | 1.14.0  | 1.14.1  | VP8/VP9 encoder/decoder
+#   libvvenc         | -      | low      | -       | 1.13.1  | H.266/VVC encoder (too early)
+#   librav1e         | -      | subsumed | 0.7.1   | 0.8.1   | AV1 encoder - svtav1 faster
+#   libkvazaar       | -      | subsumed | 2.3.1   | 2.3.2   | HEVC encoder - x265 better
+#   libopenh264      | -      | subsumed | 2.6.0   | 2.6.0   | H.264 (Cisco) - x264 better
+#   libxvid          | -      | legacy   | 1.3.7   | 1.3.7   | MPEG-4 Part 2 (obsolete)
+#   libtheora        | -      | legacy   | 1.2.0a1 | 1.2.0   | Theora codec (obsolete)
+#
+#   IMAGE CODECS
+#   libwebp          | src    | high     | 1.3.2   | 1.6.0   | WebP image codec
+#   libjxl           | src    | high     | 0.7.0   | 0.11.1  | JPEG XL (next-gen, HDR)
+#   libopenjpeg      | -      | low      | 2.5.0   | 2.5.4   | JPEG 2000 (cinema/medical)
+#   librsvg          | -      | low      | 2.58.0  | 2.61.3  | SVG rasterization
+#   libsnappy        | -      | low      | 1.1.10  | 1.2.2   | Snappy compression (HAP codec)
+#
+#   AUDIO CODECS
+#   libfdk-aac       | apt    | high     | 2.0.2   | 2.0.3   | AAC encoder (best quality)
+#   libmp3lame       | apt    | high     | 3.100   | 3.100   | MP3 encoder
+#   libopus          | apt    | high     | 1.5.2   | 1.6     | Opus encoder/decoder
+#   libvorbis        | apt    | high     | 1.3.7   | 1.3.7   | Vorbis encoder/decoder
+#   librubberband    | apt    | med      | 3.3.0   | 4.0.0   | Audio time-stretch/pitch-shift
+#   liblc3           | -      | low      | 1.1.3   | 1.1.3   | LC3 Bluetooth audio codec
+#   libopencore-amr  | -      | legacy   | 0.1.6   | 0.1.6   | AMR-NB/WB (old mobile audio)
+#
+#   SUBTITLE/TEXT
+#   libass           | apt    | high     | 0.17.3  | 0.17.4  | ASS/SSA subtitle renderer
+#   libfreetype      | apt    | high     | 2.13.3  | 2.14.1  | Font rendering
+#   libfontconfig    | apt    | high     | 2.15.0  | 2.17.0  | Font configuration
+#   libfribidi       | apt    | med      | 1.0.16  | 1.0.16  | BiDi text (RTL languages)
+#   libharfbuzz      | apt    | med      | 10.2.0  | 12.3.0  | Complex text shaping
+#
+#   FILTERS/PROCESSING
+#   libzimg          | apt    | high     | 3.0.5   | 3.0.6   | High-quality image scaling
+#   libsoxr          | apt    | high     | 0.1.3   | 0.1.3   | High-quality audio resampling
+#   libvmaf          | src    | med      | 2.3.1   | 3.0.0   | Video quality metrics
+#   libplacebo       | src    | med      | 7.349.0 | 7.351.0 | GPU HDR tone mapping
+#   libshaderc       | src*   | med      | -       | -       | GLSL->SPIRV compiler (*via Vulkan SDK)
+#   libvidstab       | apt    | med      | 1.1.0   | 1.1.1   | Video stabilization
+#   libmysofa        | -      | low      | 1.3.3   | 1.3.3   | HRTF spatial audio (sofalizer)
+#   libtesseract     | -      | low      | 5.5.0   | 5.5.1   | OCR text extraction
+#   opencl           | apt    | low      | 2.3.3   | -       | GPU compute filters
+#
+#   HARDWARE ACCEL
+#   libva            | src    | high     | 2.20.0  | 2.23.0  | VA-API (Intel/AMD) - Xe support
+#   libvpl           | src    | high     | 2023.3  | 2.16.0  | Intel QuickSync Video
+#   cuda-nvcc        | src    | high     | -       | -       | NVIDIA CUDA compiler
+#   nvenc            | src    | high     | -       | -       | NVIDIA hardware encoder
+#   cuvid            | src    | high     | -       | -       | NVIDIA hardware decoder
+#   vaapi            | src    | high     | -       | -       | VA-API hwaccel
+#   nvdec            | src    | med      | -       | -       | NVIDIA hwaccel decode API
+#   vulkan           | src    | med      | -       | -       | Vulkan GPU compute
+#   cuda-llvm        | -      | subsumed | -       | -       | CUDA via clang - we use nvcc
+#   vdpau            | -      | legacy   | 1.5     | 1.5     | NVIDIA VDPAU (use nvdec)
+#
+#   PROTOCOLS/NETWORK
+#   openssl          | apt    | high     | 3.0.13  | 3.0.15  | TLS/HTTPS support
+#   libsrt           | apt    | high     | 1.5.3   | 1.5.4   | SRT streaming protocol
+#   libssh           | -      | low      | 0.10.6  | 0.11.1  | SFTP protocol
+#   librist          | -      | low      | 0.2.11  | 0.2.11  | RIST broadcast protocol
+#   libzmq           | -      | low      | 4.3.5   | 4.3.5   | ZeroMQ IPC messaging
+#   libxml2          | -      | low      | 2.9.14  | 2.13.5  | XML/DASH manifest parsing
+#
+#   INPUT/OUTPUT
+#   libbluray        | apt    | med      | 1.3.4   | 1.4.0   | Blu-ray disc reading
+#   libv4l2          | -      | low      | 1.28.1  | 1.28.1  | V4L2 webcam/capture
+#   alsa             | -      | low      | 1.2.14  | 1.2.14  | Linux ALSA audio input
+#
+#   META FLAGS
+#   gpl              | yes    | high     | -       | -       | Enable GPL-licensed code
+#   version3         | yes    | high     | -       | -       | Enable (L)GPL v3 code
+#   nonfree          | yes    | high     | -       | -       | Enable non-free code (fdk-aac)
 #
 # =============================================================================
 
@@ -38,6 +142,9 @@ BUILD_LIBVPL=${BUILD_LIBVPL:-1}          # Intel QuickSync (apt: 2023.3, latest:
 BUILD_LIBDAV1D=${BUILD_LIBDAV1D:-1}      # AV1 decoder (apt: 1.4.1, latest: 1.5.0)
 BUILD_LIBSVTAV1=${BUILD_LIBSVTAV1:-1}    # AV1 encoder (apt: 1.7.0, latest: 3.0.0)
 BUILD_LIBVMAF=${BUILD_LIBVMAF:-1}        # Video quality metrics (apt: 2.3.1, latest: 3.0.0)
+BUILD_LIBVA=${BUILD_LIBVA:-1}            # VA-API (apt: 2.20.0, latest: 2.23.0 - Xe support)
+BUILD_LIBJXL=${BUILD_LIBJXL:-1}          # JPEG XL (apt: 0.7.0, latest: 0.11.1)
+BUILD_LIBX264=${BUILD_LIBX264:-1}        # H.264 encoder (apt: 8-bit only, src: 8/10-bit)
 
 # FFmpeg version: "snapshot" for latest git, or specific version like "7.1"
 FFMPEG_VERSION=${FFMPEG_VERSION:-snapshot}
@@ -55,13 +162,14 @@ CUDA_VERSION=${CUDA_VERSION:-auto}
 NVCC_GENCODE=${NVCC_GENCODE:-native}
 
 # Build paths
-SRC_DIR="${SRC_DIR:-$HOME/ffmpeg_sources}"
-BUILD_DIR="${BUILD_DIR:-$HOME/ffmpeg_build}"
-BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"
+SRC_DIR="${SRC_DIR:-$HOME/ffmpeg_sources}"      # Source code cache (can be deleted after build)
+BUILD_DIR="${BUILD_DIR:-$HOME/ffmpeg_build}"    # Build artifacts cache (can be deleted after build)
+BIN_DIR="${BIN_DIR:-$HOME/.local/bin}"          # Final binary install location
+LIB_DIR="${LIB_DIR:-$HOME/.local/lib}"          # Final shared library install location (for libva)
 
 NPROC=$(nproc)
 
-mkdir -p "$SRC_DIR"
+mkdir -p "$SRC_DIR" "$BUILD_DIR" "$BIN_DIR" "$LIB_DIR"
 
 # Base packages (installed first, includes wget needed for CUDA repo setup)
 APT_PACKAGES=(
@@ -69,6 +177,7 @@ APT_PACKAGES=(
     automake
     build-essential
     cmake
+    doxygen
     git
     meson
     nasm
@@ -78,9 +187,12 @@ APT_PACKAGES=(
     wget
     yasm
     libass-dev
+    libbluray-dev
     libfdk-aac-dev
     libfontconfig1-dev
     libfreetype6-dev
+    libfribidi-dev
+    libharfbuzz-dev
     libsoxr-dev
     libsrt-openssl-dev
     libssl-dev
@@ -90,16 +202,19 @@ APT_PACKAGES=(
     liblzo2-dev
     libmp3lame-dev
     libnuma-dev
+    ocl-icd-opencl-dev
     libopus-dev
+    librubberband-dev
     libsdl2-dev
     libtool
     python3-jinja2
     libunistring-dev
-    libva-dev
     libvdpau-dev
+    libvidstab-dev
+    libdrm-dev
+    libx11-dev
     libvorbis-dev
     libvpx-dev
-    libx264-dev
     libxcb-shm0-dev
     libxcb-xfixes0-dev
     libxcb1-dev
@@ -113,6 +228,9 @@ APT_PACKAGES=(
 [ "$BUILD_LIBDAV1D" != "1" ] && APT_PACKAGES+=(libdav1d-dev)
 [ "$BUILD_LIBSVTAV1" != "1" ] && APT_PACKAGES+=(libsvtav1enc-dev)
 [ "$BUILD_LIBVMAF" != "1" ] && APT_PACKAGES+=(libvmaf-dev)
+[ "$BUILD_LIBVA" != "1" ] && APT_PACKAGES+=(libva-dev)
+[ "$BUILD_LIBJXL" != "1" ] && APT_PACKAGES+=(libjxl-dev)
+[ "$BUILD_LIBX264" != "1" ] && APT_PACKAGES+=(libx264-dev)
 sudo apt-get update && sudo apt-get install -y "${APT_PACKAGES[@]}"
 
 
@@ -135,9 +253,12 @@ if [ "$BUILD_NVIDIA" = "1" ]; then
     # Add CUDA repo if not present or if we need to install
     if [ "$CUDA_VERSION" = "auto" ] || ! command -v nvcc &> /dev/null; then
         if ! dpkg -l cuda-keyring 2>/dev/null | grep -q ^ii; then
-            wget -q https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2404/x86_64/cuda-keyring_1.1-1_all.deb
-            sudo dpkg -i cuda-keyring_1.1-1_all.deb
-            rm cuda-keyring_1.1-1_all.deb
+            # Detect Ubuntu version for correct CUDA repo (24.04 -> ubuntu2404, 25.04 -> ubuntu2504)
+            UBUNTU_VERSION=$(grep VERSION_ID /etc/os-release | cut -d'"' -f2 | tr -d '.')
+            CUDA_REPO_URL="https://developer.download.nvidia.com/compute/cuda/repos/ubuntu${UBUNTU_VERSION}/x86_64/cuda-keyring_1.1-1_all.deb"
+            wget -q "$CUDA_REPO_URL" -O cuda-keyring.deb
+            sudo dpkg -i cuda-keyring.deb
+            rm cuda-keyring.deb
             sudo apt-get update
         fi
 
@@ -244,22 +365,88 @@ extern __DEVICE_FUNCTIONS_DECL__ __device_builtin__ float                  rsqrt
     fi
 
     cd "$SRC_DIR" &&
-    git -C nv-codec-headers pull 2>/dev/null || (rm -rf nv-codec-headers && git clone --depth 1 https://git.videolan.org/git/ffmpeg/nv-codec-headers.git) &&
+    ([ -d nv-codec-headers/.git ] && git -C nv-codec-headers pull || (rm -rf nv-codec-headers && git clone --depth 1 https://git.videolan.org/git/ffmpeg/nv-codec-headers.git)) &&
     cd nv-codec-headers &&
     make &&
     make PREFIX="$BUILD_DIR" install
 fi
 
 
+# libx264 (H.264/AVC encoder)
+# Build with --bit-depth=all for 8-bit and 10-bit support
+if [ "$BUILD_LIBX264" = "1" ]; then
+    cd "$SRC_DIR" &&
+    ([ -d x264/.git ] && git -C x264 pull || (rm -rf x264 && git clone --depth 1 https://code.videolan.org/videolan/x264.git)) &&
+    cd x264 &&
+    PATH="$BIN_DIR:$PATH" ./configure --prefix="$BUILD_DIR" --enable-static --enable-pic --disable-cli --bit-depth=all &&
+    PATH="$BIN_DIR:$PATH" make -j $NPROC &&
+    make install
+fi
+
+
 # libx265 (H.265/HEVC encoder)
-# Note: x265's cmake doesn't reliably install x265.pc, so we create it manually
+# Multilib build: 8-bit + 10-bit + 12-bit support (required for HDR)
+# Build order: 12-bit → 10-bit → 8-bit (main links the others)
 if [ "$BUILD_LIBX265" = "1" ]; then
     cd "$SRC_DIR" &&
-    git -C x265_git pull 2>/dev/null || (rm -rf x265_git && git clone --depth 1 https://bitbucket.org/multicoreware/x265_git.git) &&
+    ([ -d x265_git/.git ] && git -C x265_git pull || (rm -rf x265_git && git clone --depth 1 https://bitbucket.org/multicoreware/x265_git.git)) &&
     cd x265_git/build/linux &&
-    PATH="$BIN_DIR:$PATH" cmake -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX="$BUILD_DIR" -DLIB_INSTALL_DIR="$BUILD_DIR/lib" -DENABLE_SHARED=off ../../source &&
+
+    # Clean previous builds
+    rm -rf 8bit 10bit 12bit &&
+    mkdir -p 8bit 10bit 12bit &&
+
+    # Build 12-bit
+    cd 12bit &&
+    PATH="$BIN_DIR:$PATH" cmake -G "Unix Makefiles" \
+        -DCMAKE_INSTALL_PREFIX="$BUILD_DIR" \
+        -DHIGH_BIT_DEPTH=ON \
+        -DEXPORT_C_API=OFF \
+        -DENABLE_SHARED=OFF \
+        -DENABLE_CLI=OFF \
+        -DMAIN12=ON \
+        ../../../source &&
     PATH="$BIN_DIR:$PATH" make -j $NPROC &&
+
+    # Build 10-bit
+    cd ../10bit &&
+    PATH="$BIN_DIR:$PATH" cmake -G "Unix Makefiles" \
+        -DCMAKE_INSTALL_PREFIX="$BUILD_DIR" \
+        -DHIGH_BIT_DEPTH=ON \
+        -DEXPORT_C_API=OFF \
+        -DENABLE_SHARED=OFF \
+        -DENABLE_CLI=OFF \
+        ../../../source &&
+    PATH="$BIN_DIR:$PATH" make -j $NPROC &&
+
+    # Build 8-bit (main) and link in 10-bit and 12-bit
+    cd ../8bit &&
+    ln -sf ../10bit/libx265.a libx265_main10.a &&
+    ln -sf ../12bit/libx265.a libx265_main12.a &&
+    PATH="$BIN_DIR:$PATH" cmake -G "Unix Makefiles" \
+        -DCMAKE_INSTALL_PREFIX="$BUILD_DIR" \
+        -DLIB_INSTALL_DIR="$BUILD_DIR/lib" \
+        -DENABLE_SHARED=OFF \
+        -DENABLE_CLI=OFF \
+        -DEXTRA_LIB="x265_main10.a;x265_main12.a" \
+        -DEXTRA_LINK_FLAGS="-L." \
+        -DLINKED_10BIT=ON \
+        -DLINKED_12BIT=ON \
+        ../../../source &&
+    PATH="$BIN_DIR:$PATH" make -j $NPROC &&
+    # Merge 8-bit, 10-bit, and 12-bit libraries into one (cmake doesn't do this automatically)
+    mv libx265.a libx265_main.a &&
+    mkdir -p merged/8bit merged/10bit merged/12bit &&
+    (cd merged/8bit && ar x ../../libx265_main.a) &&
+    (cd merged/10bit && ar x ../../libx265_main10.a) &&
+    (cd merged/12bit && ar x ../../libx265_main12.a) &&
+    ar crs libx265.a merged/*/*.o &&
+    rm -rf merged libx265_main.a &&
     make install &&
+
+    # x265's cmake doesn't reliably install x265.pc, so we create it manually
+    # Extract version from x265.h (format: #define X265_BUILD 215)
+    X265_VERSION=$(grep '#define X265_BUILD' "$BUILD_DIR/include/x265.h" | awk '{print $3}') &&
     mkdir -p "$BUILD_DIR/lib/pkgconfig" &&
     cat > "$BUILD_DIR/lib/pkgconfig/x265.pc" << PCEOF
 prefix=$BUILD_DIR
@@ -268,8 +455,8 @@ libdir=\${exec_prefix}/lib
 includedir=\${prefix}/include
 
 Name: x265
-Description: H.265/HEVC video encoder
-Version: 4.1
+Description: H.265/HEVC video encoder (8-bit + 10-bit + 12-bit)
+Version: $X265_VERSION
 Libs: -L\${libdir} -lx265
 Libs.private: -lstdc++ -lm -lrt -ldl -lnuma -lpthread
 Cflags: -I\${includedir}
@@ -279,10 +466,10 @@ fi
 # libaom (AV1 reference codec)
 if [ "$BUILD_LIBAOM" = "1" ]; then
     cd "$SRC_DIR" &&
-    git -C aom pull 2>/dev/null || (rm -rf aom && git clone --depth 1 https://aomedia.googlesource.com/aom) &&
+    ([ -d aom/.git ] && git -C aom pull || (rm -rf aom && git clone --depth 1 https://aomedia.googlesource.com/aom)) &&
     mkdir -p aom_build &&
     cd aom_build &&
-    PATH="$BIN_DIR:$PATH" cmake -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX="$BUILD_DIR" -DENABLE_TESTS=OFF -DENABLE_NASM=on -DBUILD_SHARED_LIBS=OFF ../aom &&
+    PATH="$BIN_DIR:$PATH" cmake -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX="$BUILD_DIR" -DENABLE_TESTS=OFF -DENABLE_NASM=on -DBUILD_SHARED_LIBS=OFF -DCONFIG_AV1_HIGHBITDEPTH=1 ../aom &&
     PATH="$BIN_DIR:$PATH" make -j $NPROC &&
     make install
 fi
@@ -290,7 +477,7 @@ fi
 # libwebp (WebP image codec)
 if [ "$BUILD_LIBWEBP" = "1" ]; then
     cd "$SRC_DIR" &&
-    git -C libwebp pull 2>/dev/null || (rm -rf libwebp && git clone --depth 1 https://chromium.googlesource.com/webm/libwebp) &&
+    ([ -d libwebp/.git ] && git -C libwebp pull || (rm -rf libwebp && git clone --depth 1 https://chromium.googlesource.com/webm/libwebp)) &&
     cd libwebp &&
     ./autogen.sh &&
     ./configure --prefix="$BUILD_DIR" --disable-shared --enable-static &&
@@ -298,10 +485,26 @@ if [ "$BUILD_LIBWEBP" = "1" ]; then
     make install
 fi
 
+# libjxl (JPEG XL image codec)
+# Ubuntu 24.04 ships 0.7.0 which is quite old; latest is 0.11.1 with HDR improvements
+if [ "$BUILD_LIBJXL" = "1" ]; then
+    cd "$SRC_DIR" &&
+    ([ -d libjxl/.git ] && git -C libjxl pull || (rm -rf libjxl && git clone --depth 1 --recursive https://github.com/libjxl/libjxl.git)) &&
+    cd libjxl &&
+    mkdir -p build &&
+    cd build &&
+    cmake -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX="$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release \
+        -DBUILD_SHARED_LIBS=OFF -DJPEGXL_ENABLE_BENCHMARK=OFF -DJPEGXL_ENABLE_EXAMPLES=OFF \
+        -DJPEGXL_ENABLE_MANPAGES=OFF -DJPEGXL_ENABLE_PLUGINS=OFF -DJPEGXL_ENABLE_VIEWERS=OFF \
+        -DJPEGXL_ENABLE_TOOLS=OFF -DJPEGXL_ENABLE_DOXYGEN=OFF -DJPEGXL_ENABLE_JPEGLI=OFF .. &&
+    make -j $NPROC &&
+    make install
+fi
+
 # libvpl (Intel Video Processing Library / QuickSync)
 if [ "$BUILD_LIBVPL" = "1" ]; then
     cd "$SRC_DIR" &&
-    git -C libvpl pull 2>/dev/null || (rm -rf libvpl && git clone --depth 1 https://github.com/intel/libvpl.git) &&
+    ([ -d libvpl/.git ] && git -C libvpl pull || (rm -rf libvpl && git clone --depth 1 https://github.com/intel/libvpl.git)) &&
     mkdir -p libvpl/build &&
     cd libvpl/build &&
     cmake -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX="$BUILD_DIR" -DBUILD_SHARED_LIBS=OFF .. &&
@@ -312,7 +515,7 @@ fi
 # libdav1d (AV1 decoder)
 if [ "$BUILD_LIBDAV1D" = "1" ]; then
     cd "$SRC_DIR" &&
-    git -C dav1d pull 2>/dev/null || (rm -rf dav1d && git clone --depth 1 https://code.videolan.org/videolan/dav1d.git) &&
+    ([ -d dav1d/.git ] && git -C dav1d pull || (rm -rf dav1d && git clone --depth 1 https://code.videolan.org/videolan/dav1d.git)) &&
     cd dav1d &&
     if [ -f build/build.ninja ]; then
         meson setup --reconfigure build --buildtype=release --default-library=static --prefix="$BUILD_DIR" --libdir="$BUILD_DIR/lib"
@@ -326,7 +529,7 @@ fi
 # libsvtav1 (AV1 encoder)
 if [ "$BUILD_LIBSVTAV1" = "1" ]; then
     cd "$SRC_DIR" &&
-    git -C SVT-AV1 pull 2>/dev/null || (rm -rf SVT-AV1 && git clone --depth 1 https://gitlab.com/AOMediaCodec/SVT-AV1.git) &&
+    ([ -d SVT-AV1/.git ] && git -C SVT-AV1 pull || (rm -rf SVT-AV1 && git clone --depth 1 https://gitlab.com/AOMediaCodec/SVT-AV1.git)) &&
     mkdir -p SVT-AV1/build &&
     cd SVT-AV1/build &&
     PATH="$BIN_DIR:$PATH" cmake -G "Unix Makefiles" -DCMAKE_INSTALL_PREFIX="$BUILD_DIR" -DCMAKE_BUILD_TYPE=Release -DBUILD_DEC=OFF -DBUILD_SHARED_LIBS=OFF .. &&
@@ -337,7 +540,7 @@ fi
 # libvmaf (video quality metrics)
 if [ "$BUILD_LIBVMAF" = "1" ]; then
     cd "$SRC_DIR" &&
-    git -C vmaf pull 2>/dev/null || (rm -rf vmaf && git clone --depth 1 https://github.com/Netflix/vmaf) &&
+    ([ -d vmaf/.git ] && git -C vmaf pull || (rm -rf vmaf && git clone --depth 1 https://github.com/Netflix/vmaf)) &&
     mkdir -p vmaf/libvmaf/build &&
     cd vmaf/libvmaf/build &&
     if [ -f build.ninja ]; then
@@ -349,10 +552,28 @@ if [ "$BUILD_LIBVMAF" = "1" ]; then
     ninja install
 fi
 
+# libva (VA-API)
+# Ubuntu 24.04 ships 2.20.0 which lacks Intel Xe kernel driver support (added in 2.21)
+# Build from source to get Xe support for newer Intel GPUs
+if [ "$BUILD_LIBVA" = "1" ]; then
+    cd "$SRC_DIR" &&
+    ([ -d libva/.git ] && git -C libva pull || (rm -rf libva && git clone --depth 1 https://github.com/intel/libva.git)) &&
+    cd libva &&
+    if [ -f build/build.ninja ]; then
+        meson setup --reconfigure build --buildtype=release --default-library=shared --prefix="$BUILD_DIR" --libdir="$BUILD_DIR/lib"
+    else
+        meson setup build --buildtype=release --default-library=shared --prefix="$BUILD_DIR" --libdir="$BUILD_DIR/lib"
+    fi &&
+    ninja -C build &&
+    ninja -C build install &&
+    # Copy shared libs to permanent location (LIB_DIR) for runtime
+    cp -a "$BUILD_DIR/lib"/libva*.so* "$LIB_DIR/"
+fi
+
 # libplacebo (for GPU tone mapping)
 if [ "$BUILD_LIBPLACEBO" = "1" ]; then
     # Download Vulkan SDK tarball (apt packages deprecated May 2025)
-    VULKAN_SDK_VERSION=${VULKAN_SDK_VERSION:-1.4.328.1}
+    VULKAN_SDK_VERSION=${VULKAN_SDK_VERSION:-1.4.335.0}
     VULKAN_SDK_DIR="${SRC_DIR}/vulkan-sdk-${VULKAN_SDK_VERSION}"
     if [ ! -d "$VULKAN_SDK_DIR" ]; then
         echo "Downloading Vulkan SDK $VULKAN_SDK_VERSION..."
@@ -375,7 +596,7 @@ if [ "$BUILD_LIBPLACEBO" = "1" ]; then
     cp "$VULKAN_SDK/lib/pkgconfig/shaderc_combined.pc" "$VULKAN_SDK/lib/pkgconfig/shaderc.pc"
 
     cd "$SRC_DIR" &&
-    git -C libplacebo pull 2>/dev/null || (rm -rf libplacebo && git clone --depth 1 https://code.videolan.org/videolan/libplacebo.git) &&
+    ([ -d libplacebo/.git ] && git -C libplacebo pull || (rm -rf libplacebo && git clone --depth 1 https://code.videolan.org/videolan/libplacebo.git)) &&
     cd libplacebo &&
     if [ -f build/build.ninja ]; then
         meson setup --reconfigure build --buildtype=release --default-library=static --prefer-static -Dvulkan=enabled -Dvulkan-registry="$VULKAN_SDK/share/vulkan/registry/vk.xml" -Dopengl=disabled -Dd3d11=disabled -Ddemos=false --prefix "$BUILD_DIR" --libdir="$BUILD_DIR/lib"
@@ -407,7 +628,8 @@ cd "$FFMPEG_DIR" && \
 # Build configure flags
 # MARCH=native for CPU-specific optimizations (opt-in, not portable)
 EXTRA_CFLAGS="-I$BUILD_DIR/include -O3${MARCH:+ -march=$MARCH -mtune=$MARCH}"
-EXTRA_LDFLAGS="-L$BUILD_DIR/lib -s"
+# -rpath embeds library search path in binary so it finds our built libs at runtime
+EXTRA_LDFLAGS="-L$BUILD_DIR/lib -s -Wl,-rpath,$LIB_DIR"
 if [ "$BUILD_NVIDIA" = "1" ]; then
     EXTRA_CFLAGS="$EXTRA_CFLAGS -I$CUDA_PATH/include"
     EXTRA_LDFLAGS="$EXTRA_LDFLAGS -L$CUDA_PATH/lib64"
@@ -426,14 +648,19 @@ CONFIGURE_CMD=(
     --extra-libs="-lpthread -lm"
     --ld="g++"
     --bindir="$BIN_DIR"
+    --disable-debug
     --enable-gpl
     --enable-version3
     --enable-openssl
     --enable-libaom
     --enable-libass
+    --enable-libbluray
     --enable-libfdk-aac
     --enable-libfontconfig
     --enable-libfreetype
+    --enable-libfribidi
+    --enable-libharfbuzz
+    --enable-libjxl
     --enable-libmp3lame
     --enable-libopus
     --enable-libsvtav1
@@ -444,11 +671,15 @@ CONFIGURE_CMD=(
     --enable-libwebp
     --enable-libx264
     --enable-libx265
-    --enable-libzimg
+    --enable-librubberband
     --enable-libsoxr
     --enable-libsrt
-    --enable-vaapi
+    --enable-libvidstab
     --enable-libvpl
+    --enable-libzimg
+    --enable-nvdec
+    --enable-opencl
+    --enable-vaapi
     --enable-nonfree
     "${CUDA_FLAGS[@]}"
 )
