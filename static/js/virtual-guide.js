@@ -9,6 +9,7 @@ class VirtualGuide {
     this.rowHeightMobile = options.rowHeightMobile || 40; // 2.5rem mobile
     this.totalRows = options.totalRows;
     this.bufferSize = options.bufferSize || 50;
+    this.maxCacheSize = options.maxCacheSize || 500; // Evict beyond this
     this.initialRows = options.initialRows || []; // SSR rows
     this.offset = options.offset || 0;
     this.cats = options.cats || '';
@@ -16,11 +17,18 @@ class VirtualGuide {
 
     // State
     this.cache = new Map(); // row index -> row data
+    this.failedRanges = new Map(); // range key -> retry count
+    this.maxRetries = 3;
+    this.needsRecheck = false;
     this.renderedRange = { start: 0, end: 0 };
     this.pendingFetch = null;
+    this.pendingFetchRange = null;
     this.scrollDebounce = null;
     this.fetchDebounce = null;
+    this.renderDebounce = null;
     this.isMobile = window.innerWidth < 512;
+    this.lastScrollTop = 0;
+    this.scrollDirection = 'down';
 
     // DOM elements
     this.viewport = null;
@@ -263,19 +271,26 @@ class VirtualGuide {
     const overallEnd = Math.max(...ranges.map(r => r.end));
 
     // If there's a pending fetch, check if it's for a relevant range
-    if (this.pendingFetch && this.pendingFetchRange) {
-      const p = this.pendingFetchRange;
-      const overlaps = !(overallEnd < p.start || overallStart > p.end);
+    if (this.pendingFetch) {
+      if (this.pendingFetchRange) {
+        const p = this.pendingFetchRange;
+        const overlaps = !(overallEnd < p.start || overallStart > p.end);
 
-      if (overlaps) {
-        // Pending fetch will give us some useful data, let it finish
-        return;
+        if (overlaps) {
+          // Pending fetch will give us some useful data, let it finish
+          // But schedule a re-check after it completes to catch any remaining gaps
+          this.needsRecheck = true;
+          return;
+        } else {
+          // Pending fetch is for a completely different area - abort it
+          this.pendingFetch.abort();
+        }
       } else {
-        // Pending fetch is for a completely different area - abort it
+        // Orphaned pending fetch (no range tracked) - abort it
         this.pendingFetch.abort();
-        this.pendingFetch = null;
-        this.pendingFetchRange = null;
       }
+      this.pendingFetch = null;
+      this.pendingFetchRange = null;
     }
 
     const controller = new AbortController();
@@ -303,14 +318,44 @@ class VirtualGuide {
       for (const row of data.rows) {
         this.cache.set(row.index, row);
       }
+
+      // Clear any failure tracking for this range
+      const rangeKey = `${overallStart}-${overallEnd}`;
+      this.failedRanges.delete(rangeKey);
+
+      // Evict old cache entries to prevent memory growth
+      this.pruneCache();
     } catch (e) {
       if (e.name !== 'AbortError') {
         console.error('Failed to fetch guide rows:', e);
+
+        // Track failed range for retry
+        const rangeKey = `${overallStart}-${overallEnd}`;
+        const retryCount = (this.failedRanges.get(rangeKey) || 0) + 1;
+
+        if (retryCount < this.maxRetries) {
+          this.failedRanges.set(rangeKey, retryCount);
+          // Schedule retry after delay
+          setTimeout(() => {
+            this.failedRanges.delete(rangeKey);
+            this.updateVisibleRange();
+          }, 1000 * retryCount); // Exponential backoff: 1s, 2s, 3s
+        } else {
+          // Max retries reached - clear tracking
+          this.failedRanges.delete(rangeKey);
+          console.error(`Failed to fetch rows ${overallStart}-${overallEnd} after ${this.maxRetries} retries`);
+        }
       }
     } finally {
       if (this.pendingFetch === controller) {
         this.pendingFetch = null;
         this.pendingFetchRange = null;
+
+        // If something requested a recheck while we were fetching, do it now
+        if (this.needsRecheck) {
+          this.needsRecheck = false;
+          setTimeout(() => this.updateVisibleRange(), 0);
+        }
       }
     }
   }
@@ -332,6 +377,35 @@ class VirtualGuide {
     // Position content at the right scroll offset
     this.content.style.transform = `translateY(${this.renderedRange.start * this.currentRowHeight}px)`;
     this.content.innerHTML = html.join('');
+  }
+
+  /**
+   * Evict cached rows far from current view to prevent unbounded memory growth.
+   * Keeps rows within 2x buffer distance from current rendered range.
+   */
+  pruneCache() {
+    if (this.cache.size <= this.maxCacheSize) {
+      return;
+    }
+
+    const center = Math.floor((this.renderedRange.start + this.renderedRange.end) / 2);
+    const keepDistance = this.bufferSize * 2;
+
+    // Collect indices to remove (those far from current view)
+    const toRemove = [];
+    for (const index of this.cache.keys()) {
+      const distance = Math.abs(index - center);
+      if (distance > keepDistance) {
+        toRemove.push(index);
+      }
+    }
+
+    // Remove furthest first until under max size
+    toRemove.sort((a, b) => Math.abs(b - center) - Math.abs(a - center));
+    const removeCount = Math.min(toRemove.length, this.cache.size - this.maxCacheSize);
+    for (let i = 0; i < removeCount; i++) {
+      this.cache.delete(toRemove[i]);
+    }
   }
 
   renderPlaceholder(index) {
