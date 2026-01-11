@@ -586,15 +586,9 @@ async def guide_page(
     offset: int = 0,  # hours offset from now
     cats: str = "",  # comma-separated category IDs
 ):
-    # If no cats param, redirect to saved filter (per-user)
     username = user.get("sub", "")
-    if not cats:
-        user_settings = load_user_settings(username)
-        saved = user_settings.get("guide_filter", [])
-        if saved:
-            return RedirectResponse(
-                f"/guide?offset={offset}&cats={','.join(saved)}", status_code=303
-            )
+    # Check if cats was explicitly in URL (even if empty)
+    cats_in_url = "cats" in request.query_params
 
     # If no channel data in memory, try file cache first (async to avoid blocking)
     if "live_categories" not in get_cache() or "live_streams" not in get_cache():
@@ -636,8 +630,22 @@ async def guide_page(
     cat_by_id = {str(c["category_id"]): c for c in categories}
     ordered_filter_cats = [cat_by_id[cid] for cid in saved_filter_list if cid in cat_by_id]
 
+    # Get saved VIEW selection (separate from Settings filter)
+    saved_view_cats = user_settings.get("guide_selected_cats")  # None = show all
+
+    # Determine effective cats: URL param (if present) > saved view > all from filter
+    if cats_in_url:
+        # URL explicitly has cats param (could be empty for "none")
+        effective_cats = cats
+    elif saved_view_cats is not None:
+        # Use saved view selection (could be [] for "none")
+        effective_cats = ",".join(saved_view_cats)
+    else:
+        # Default: show all from settings filter
+        effective_cats = ",".join(saved_filter_list)
+
     # Use helper to get filtered/sorted streams
-    streams, ordered_cats, selected_cats = _get_guide_streams(cats, username)
+    streams, ordered_cats, selected_cats = _get_guide_streams(effective_cats, username)
     total_count = len(streams)
 
     # Time window: 3 hours starting from offset
@@ -684,6 +692,7 @@ async def guide_page(
             "saved_filter": saved_filter,  # Full saved filter for dropdown (set)
             "ordered_filter_cats": ordered_filter_cats,  # Ordered list for dropdown
             "cats_param": cats,
+            "effective_cats": effective_cats,  # What's actually being used
             "grid_data": grid_data,
             "time_markers": time_markers,
             "time_markers_mobile": time_markers_mobile,
@@ -2526,7 +2535,14 @@ async def save_user_prefs(
         raise HTTPException(400, "Request too large")
     data = json.loads(body)
     settings = load_user_settings(username)
-    for key in ("favorites", "cc_lang", "cc_style", "cast_host", "virtual_scroll"):
+    for key in (
+        "favorites",
+        "cc_lang",
+        "cc_style",
+        "cast_host",
+        "virtual_scroll",
+        "guide_selected_cats",
+    ):
         if key in data:
             settings[key] = data[key]
     save_user_settings(username, settings)

@@ -55,7 +55,7 @@
       <div class="inline-block" id="category-dropdown">
         <button type="button" id="category-dropdown-btn"
                 class="bg-gray-700 text-sm rounded px-2 py-1 border border-gray-600 hover:border-gray-500 focus:border-blue-500 focus:outline-none inline-flex items-center gap-1">
-          <span>{% if cats_param %}{{ cats_param.split(',') | length }} selected{% else %}All categories{% endif %}</span>
+          <span>{% if effective_cats.split(',') | length < ordered_filter_cats | length %}{{ effective_cats.split(',') | length }} selected{% else %}All categories{% endif %}</span>
           <svg class="w-3 h-3 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
         </button>
       </div>
@@ -69,25 +69,33 @@
         <label class="flex items-center gap-2 px-3 py-1.5 hover:bg-gray-700 cursor-pointer text-sm">
           <input type="checkbox" class="cat-checkbox rounded bg-gray-600 border-gray-500 text-blue-500 focus:ring-blue-500 focus:ring-offset-0"
                  value="{{ cat.category_id }}"
-                 {% if not cats_param or cat.category_id|string in cats_param.split(',') %}checked{% endif %}>
+                 {% if cat.category_id|string in effective_cats.split(',') %}checked{% endif %}>
           <span class="truncate">{{ cat.category_name }}</span>
         </label>
         {% endfor %}
       </div>
       <script>
       function applyDesktopFilter() {
-        sessionStorage.removeItem('guide_scroll');
-        var checks = document.querySelectorAll('#category-dropdown-menu .cat-checkbox');
+        var menu = document.getElementById('category-dropdown-menu');
+        var checks = menu ? menu.querySelectorAll('.cat-checkbox') : [];
         var selected = [];
         for (var i = 0; i < checks.length; i++) {
           if (checks[i].checked) selected.push(checks[i].value);
         }
         var offset = {{ offset }};
-        if (selected.length === 0 || selected.length === checks.length) {
-          window.location.href = '/guide?offset=' + offset;
-        } else {
-          window.location.href = '/guide?offset=' + offset + '&cats=' + selected.join(',') + '&filter=1';
-        }
+        // Determine URL first - explicit check for "all selected" vs "some/none"
+        var allSelected = checks.length > 0 && selected.length === checks.length;
+        var url = allSelected ? '/guide?offset=' + offset : '/guide?offset=' + offset + '&cats=' + selected.join(',');
+        // Save view preference (fire and forget, don't block navigation)
+        try {
+          fetch('/api/user-prefs', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({guide_selected_cats: allSelected ? null : selected})
+          });
+        } catch (e) {}
+        // Navigate
+        window.location.href = url;
       }
       </script>
       <span class="text-xs text-gray-500">({{ total_count | default(channel_count) }} ch)</span>
@@ -130,7 +138,7 @@
       <div class="inline-block" id="category-dropdown-mobile">
         <button type="button" id="category-dropdown-btn-mobile"
                 class="bg-gray-700 text-[10px] rounded px-1 py-0.5 border border-gray-600 inline-flex items-center gap-0.5 max-w-[100px]">
-          <span class="truncate">{% if cats_param %}{{ cats_param.split(',') | length }} sel{% else %}All{% endif %}</span>
+          <span class="truncate">{% if effective_cats.split(',') | length < ordered_filter_cats | length %}{{ effective_cats.split(',') | length }} sel{% else %}All{% endif %}</span>
           <svg class="w-2 h-2 flex-shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/></svg>
         </button>
       </div>
@@ -144,25 +152,33 @@
         <label class="flex items-center gap-1.5 px-2 py-1 hover:bg-gray-700 cursor-pointer text-[11px]">
           <input type="checkbox" class="cat-checkbox-mobile rounded bg-gray-600 border-gray-500 text-blue-500 w-3 h-3"
                  value="{{ cat.category_id }}"
-                 {% if not cats_param or cat.category_id|string in cats_param.split(',') %}checked{% endif %}>
+                 {% if cat.category_id|string in effective_cats.split(',') %}checked{% endif %}>
           <span class="truncate">{{ cat.category_name }}</span>
         </label>
         {% endfor %}
       </div>
       <script>
       function applyMobileFilter() {
-        sessionStorage.removeItem('guide_scroll');
-        var checks = document.querySelectorAll('#category-dropdown-menu-mobile .cat-checkbox-mobile');
+        var menu = document.getElementById('category-dropdown-menu-mobile');
+        var checks = menu ? menu.querySelectorAll('.cat-checkbox-mobile') : [];
         var selected = [];
         for (var i = 0; i < checks.length; i++) {
           if (checks[i].checked) selected.push(checks[i].value);
         }
         var offset = {{ offset }};
-        if (selected.length === 0 || selected.length === checks.length) {
-          window.location.href = '/guide?offset=' + offset;
-        } else {
-          window.location.href = '/guide?offset=' + offset + '&cats=' + selected.join(',') + '&filter=1';
-        }
+        // Determine URL first - explicit check for "all selected" vs "some/none"
+        var allSelected = checks.length > 0 && selected.length === checks.length;
+        var url = allSelected ? '/guide?offset=' + offset : '/guide?offset=' + offset + '&cats=' + selected.join(',');
+        // Save view preference (fire and forget, don't block navigation)
+        try {
+          fetch('/api/user-prefs', {
+            method: 'POST',
+            headers: {'Content-Type': 'application/json'},
+            body: JSON.stringify({guide_selected_cats: allSelected ? null : selected})
+          });
+        } catch (e) {}
+        // Navigate
+        window.location.href = url;
       }
       </script>
       {% endif %}
@@ -312,22 +328,6 @@ const GUIDE_CONFIG = {
   }
 };
 
-// Handle category filter: sync to server when URL has cats (but not temp filters)
-(function() {
-  const urlCats = '{{ cats_param }}';
-  const urlParams = new URLSearchParams(window.location.search);
-  const isTempFilter = urlParams.get('filter') === '1';
-
-  // Only sync to saved filter if it's not a temporary dropdown filter
-  if (urlCats && !isTempFilter) {
-    fetch('/settings/guide-filter', {
-      method: 'POST',
-      headers: {'Content-Type': 'application/json'},
-      body: JSON.stringify({cats: urlCats.split(',')})
-    });
-  }
-})();
-
 // Category multi-select dropdown toggle
 (function() {
   function setupDropdown(btnId, menuId, applyFn) {
@@ -346,6 +346,7 @@ const GUIDE_CONFIG = {
         menu.style.left = rect.left + 'px';
         menu.classList.remove('hidden');
       } else {
+        // Closing via button click - apply
         menu.classList.add('hidden');
         applyFn();
       }
