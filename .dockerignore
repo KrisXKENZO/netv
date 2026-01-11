@@ -12,11 +12,13 @@ uv.lock
 
 # App data (user-specific)
 cache/
+.cache/
 settings.json
 *.pem
 
-# Tools (not needed in container)
+# Tools (not needed in container, except install-ffmpeg.sh)
 tools/
+!tools/install-ffmpeg.sh
 
 # Tests
 *_test.py

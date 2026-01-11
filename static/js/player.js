@@ -26,6 +26,7 @@
   let progressPollTimerId = null;
   let lastSavedPosition = 0;
   let savePositionTimeout = null;
+  let autoMutedByPolicy = false;
 
   // ============================================================
   // Utilities
@@ -592,7 +593,7 @@
         if (video.textTracks.length === 0) disableCcButton();
         applyCaptionsSetting();
         restorePosition();
-        video.play().catch(() => { video.muted = true; video.play(); });
+        video.play().catch(() => { if (!video.muted) { autoMutedByPolicy = true; video.muted = true; } video.play(); });
       }, { once: true });
       video.addEventListener('error', function() {
         if (onError) onError();
@@ -662,7 +663,7 @@
       }
       if (transcodeSessionId && isVodUrl) startProgressPolling();
       restorePosition();
-      video.play().catch(() => { video.muted = true; video.play(); });
+      video.play().catch(() => { if (!video.muted) { autoMutedByPolicy = true; video.muted = true; } video.play(); });
       setTimeout(() => {
         if (hls.subtitleTracks.length === 0 && video.textTracks.length === 0) disableCcButton();
       }, 1000);
@@ -757,6 +758,7 @@
           if (cfg.isVod) document.getElementById('jump-btn')?.click();
           break;
         case 'n': document.getElementById('autonext-btn')?.click(); break;
+        case 'p': document.getElementById('pip-btn')?.click(); break;
         case 'h':
           const container = document.getElementById('player-container');
           if (container.classList.contains('controls-visible')) {
@@ -940,6 +942,25 @@
       updateCcButton();
       saveSettings({ ccEnabled });
     });
+
+    // PiP button
+    const pipBtn = document.getElementById('pip-btn');
+    if (pipBtn && document.pictureInPictureEnabled) {
+      pipBtn.addEventListener('click', async (e) => {
+        e.stopPropagation();
+        try {
+          if (document.pictureInPictureElement) {
+            await document.exitPictureInPicture();
+          } else {
+            await video.requestPictureInPicture();
+          }
+        } catch (err) {
+          console.error('[PiP] Error:', err);
+        }
+      });
+    } else if (pipBtn) {
+      pipBtn.style.display = 'none';
+    }
 
     // Settings menu toggle
     document.getElementById('settings-btn')?.addEventListener('click', () => {
@@ -1302,6 +1323,17 @@
     updateCcButton();
     updateMuteIcon();
     document.getElementById('volume-slider').value = video.muted ? 0 : video.volume;
+
+    // Restore volume on first user interaction if auto-muted by browser policy
+    function restoreVolumeOnInteraction() {
+      if (autoMutedByPolicy) {
+        video.muted = false;
+        updateMuteIcon();
+        autoMutedByPolicy = false;
+      }
+    }
+    document.addEventListener('click', restoreVolumeOnInteraction, { once: true });
+    document.addEventListener('keydown', restoreVolumeOnInteraction, { once: true });
 
     // Restore info pinned state
     if (settings.infoPinned) {

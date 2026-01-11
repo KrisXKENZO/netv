@@ -44,7 +44,7 @@ import time
 import urllib.error
 import urllib.parse
 
-from fastapi import Depends, FastAPI, Form, HTTPException, Request
+from fastapi import Depends, FastAPI, Form, HTTPException, Query, Request
 from fastapi.responses import FileResponse, HTMLResponse, JSONResponse, RedirectResponse, Response
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
@@ -54,12 +54,15 @@ from auth import create_token, verify_password, verify_token
 from cache import (
     AVAILABLE_ENCODERS,
     CACHE_DIR,
+    LOGO_BROWSER_TTL,
+    LOGO_MAX_SIZE,
     Source,
     clear_all_caches,
     clear_all_file_caches,
     get_cache,
     get_cache_lock,
     get_cached_info,
+    get_cached_logo,
     get_sources,
     get_watch_position,
     load_file_cache,
@@ -67,6 +70,7 @@ from cache import (
     load_user_settings,
     refresh_encoders,
     save_file_cache,
+    save_logo,
     save_server_settings,
     save_user_settings,
     save_watch_position,
@@ -79,6 +83,7 @@ from m3u import (
     fetch_source_vod_data,
     get_first_xtream_client,
     get_refresh_in_progress,
+    get_xtream_client_by_source,
     load_all_live_data,
     load_series_data,
     load_vod_data,
@@ -87,16 +92,12 @@ from m3u import (
 from xtream import XtreamClient
 
 import auth
-import epg_db
-import transcoding
+import epg
+import ffmpeg_command
+import ffmpeg_session
 
 
 log = logging.getLogger()
-
-# Re-exports for backwards compatibility
-_cache = get_cache()
-_cache_lock = get_cache_lock()
-_refresh_in_progress = get_refresh_in_progress()
 
 # SSE subscribers for EPG ready notifications (limit to prevent DoS)
 _epg_subscribers: set[asyncio.Queue[str]] = set()
@@ -117,21 +118,29 @@ APP_DIR = pathlib.Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=APP_DIR / "templates")
 TEMPLATES.env.auto_reload = True
 
-# Super-resolution model path (compact model for real-time processing)
-SR_MODEL_PATH = pathlib.Path(
-    os.environ.get("SR_MODEL_PATH", pathlib.Path.home() / "ffmpeg_build/models/realesr-general-x4v3.pt")
-)
 
-# LibTorch library path for ffmpeg DNN backend
-LIBTORCH_LIB_PATH = os.environ.get(
-    "LIBTORCH_LIB_PATH",
-    str(pathlib.Path.home() / "research/.venv/lib/python3.12/site-packages/torch/lib")
-)
+def _logo_url_filter(url: str) -> str:
+    """Wrap external logo URLs through /api/logo proxy."""
+    if not url or url.startswith("/") or url.startswith("data:"):
+        return url  # Already local or data URL
+    # Use hostname as source for organization
+    parsed = urllib.parse.urlparse(url)
+    source = parsed.netloc.split(":")[0] if parsed.netloc else "external"
+    return f"/api/logo?source={urllib.parse.quote(source)}&url={urllib.parse.quote(url)}"
 
 
-def is_sr_available() -> bool:
-    """Check if super-resolution is available (model and libtorch exist)."""
-    return SR_MODEL_PATH.exists() and pathlib.Path(LIBTORCH_LIB_PATH).exists()
+TEMPLATES.env.filters["logo_url"] = _logo_url_filter
+
+
+def _safe_float(value: float | str | None, default: float = 0.0) -> float:
+    """Safely convert value to float, returning default on failure."""
+    if value is None:
+        return default
+    try:
+        return float(value)
+    except (ValueError, TypeError):
+        return default
+
 
 # Thread locks for fetch operations
 _fetch_locks: dict[str, threading.Lock] = {
@@ -146,14 +155,16 @@ _fetch_locks: dict[str, threading.Lock] = {
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     """Clean up orphaned transcodes and preload data on startup."""
     # Initialize EPG database
-    epg_db.init(CACHE_DIR)
+    epg.init(CACHE_DIR)
 
-    # Initialize transcoding module with settings callback and SR config
-    transcoding.init(
-        load_server_settings,
-        sr_model_path=str(SR_MODEL_PATH) if is_sr_available() else "",
-        sr_libtorch_path=LIBTORCH_LIB_PATH if is_sr_available() else "",
-    )
+    # Prune expired EPG data (keep 24h buffer for "what was just on")
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
+    pruned = epg.prune_old_programs(cutoff)
+    if pruned:
+        log.info("Pruned %d expired EPG programs", pruned)
+
+    # Initialize transcoding module with settings callback
+    ffmpeg_command.init(load_server_settings)
 
     # Kill orphaned ffmpeg processes
     try:
@@ -172,29 +183,29 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     pass
     except Exception:
         pass
-    # Clean up expired/orphaned dirs and recover valid VOD sessions
-    transcoding.recover_vod_sessions()
+    # Clean up orphaned dirs and recover valid VOD sessions
+    ffmpeg_session.cleanup_and_recover_sessions()
 
     # Preload all data in background threads (parallel)
     def load_live():
-        _refresh_in_progress.add("guide_load")
+        get_refresh_in_progress().add("guide_load")
         try:
             log.info("Preloading live data")
             cats, streams, epg_urls = load_all_live_data()
-            with _cache_lock:
-                _cache["live_categories"] = cats
-                _cache["live_streams"] = streams
-                _cache["epg_urls"] = epg_urls
+            with get_cache_lock():
+                get_cache()["live_categories"] = cats
+                get_cache()["live_streams"] = streams
+                get_cache()["epg_urls"] = epg_urls
             log.info("Live data loaded")
         finally:
-            _refresh_in_progress.discard("guide_load")
+            get_refresh_in_progress().discard("guide_load")
 
     def load_epg_data():
         try:
-            epg_urls = _cache.get("epg_urls", [])
+            epg_urls = get_cache().get("epg_urls", [])
             if epg_urls:
                 load_all_epg(epg_urls)
-                log.info("EPG data loaded: %d programs", epg_db.get_program_count())
+                log.info("EPG data loaded: %d programs", epg.get_program_count())
                 # Notify SSE subscribers
                 for q in list(_epg_subscribers):
                     with contextlib.suppress(Exception):
@@ -204,16 +215,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     def load_vod():
         vod_cats, vod_streams = load_vod_data()
-        with _cache_lock:
-            _cache["vod_categories"] = vod_cats
-            _cache["vod_streams"] = vod_streams
+        with get_cache_lock():
+            get_cache()["vod_categories"] = vod_cats
+            get_cache()["vod_streams"] = vod_streams
         log.info("VOD data loaded")
 
     def load_series():
         series_cats, series_list = load_series_data()
-        with _cache_lock:
-            _cache["series_categories"] = series_cats
-            _cache["series"] = series_list
+        with get_cache_lock():
+            get_cache()["series_categories"] = series_cats
+            get_cache()["series"] = series_list
         log.info("Series data loaded")
 
     # Start all preloads in parallel (EPG waits for live data internally)
@@ -227,12 +238,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     threading.Thread(target=load_series, daemon=True).start()
     log.info("Preload started: live+EPG, VOD, series loading in parallel")
 
-    # Periodic cleanup of expired VOD sessions
+    # Periodic cleanup of expired sessions (VOD and live)
     cleanup_stop = threading.Event()
 
     def cleanup_loop():
         while not cleanup_stop.wait(60):  # Check every minute
-            transcoding.cleanup_expired_vod_sessions()
+            ffmpeg_session.cleanup_expired_sessions()
 
     cleanup_thread = threading.Thread(target=cleanup_loop, daemon=True)
     cleanup_thread.start()
@@ -251,11 +262,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                     # Only trigger once per scheduled time
                     if (
                         _last_triggered.get(source.id) != current_time
-                        and key not in _refresh_in_progress
+                        and key not in get_refresh_in_progress()
                     ):
                         log.info("Scheduled EPG refresh for %s at %s", source.name, current_time)
                         _last_triggered[source.id] = current_time
-                        _refresh_in_progress.add(key)
+                        get_refresh_in_progress().add(key)
 
                         def do_refresh(src: Source = source, k: str = key):
                             try:
@@ -273,7 +284,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                             except Exception as e:
                                 log.error("Scheduled EPG refresh failed for %s: %s", src.name, e)
                             finally:
-                                _refresh_in_progress.discard(k)
+                                get_refresh_in_progress().discard(k)
 
                         threading.Thread(target=do_refresh, daemon=True).start()
 
@@ -288,7 +299,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     _shutdown_event.set()
     cleanup_stop.set()
     scheduler_stop.set()
-    transcoding.shutdown()
+    ffmpeg_session.shutdown()
 
 
 app = FastAPI(title="neTV", lifespan=lifespan)
@@ -477,6 +488,13 @@ def _fetch_all_epg(epg_urls: list[tuple[str, int, str]]) -> int:
         for future in concurrent.futures.as_completed(futures):
             _, count = future.result()
             total += count
+
+    # Prune expired programs (keep 24h buffer)
+    cutoff = datetime.now(UTC) - timedelta(hours=24)
+    pruned = epg.prune_old_programs(cutoff)
+    if pruned:
+        log.info("Pruned %d expired EPG programs", pruned)
+
     log.info("EPG fetch complete: %d programs total", total)
     return total
 
@@ -487,44 +505,44 @@ def load_all_epg(epg_urls: list[tuple[str, int, str]]) -> None:
     Args:
         epg_urls: List of (url, timeout, source_id) tuples
     """
-    if epg_db.has_programs():
-        log.info("EPG database has %d programs", epg_db.get_program_count())
+    if epg.has_programs():
+        log.info("EPG database has %d programs", epg.get_program_count())
         return
 
     # No data - fetch synchronously
     with _fetch_locks["epg"]:
-        if epg_db.has_programs():
+        if epg.has_programs():
             return
         log.info("No EPG data, fetching")
         try:
             _fetch_all_epg(epg_urls)
         except Exception as e:
             log.error("EPG fetch failed: %s", e)
-            _cache["epg_error"] = str(e)
+            get_cache()["epg_error"] = str(e)
 
 
 def _start_guide_background_load() -> None:
     """Start background loading of guide data if not already in progress."""
-    if "guide_load" in _refresh_in_progress:
+    if "guide_load" in get_refresh_in_progress():
         return
-    _refresh_in_progress.add("guide_load")
+    get_refresh_in_progress().add("guide_load")
 
     def load():
         try:
             log.info("Loading guide data in background")
             cats, streams, epg_urls = load_all_live_data()
-            with _cache_lock:
-                _cache["live_categories"] = cats
-                _cache["live_streams"] = streams
-                _cache["epg_urls"] = epg_urls
+            with get_cache_lock():
+                get_cache()["live_categories"] = cats
+                get_cache()["live_streams"] = streams
+                get_cache()["epg_urls"] = epg_urls
             try:
                 _fetch_all_epg(epg_urls)
             except Exception as e:
-                with _cache_lock:
-                    _cache["epg_error"] = str(e)
+                with get_cache_lock():
+                    get_cache()["epg_error"] = str(e)
             log.info("Guide data loaded")
         finally:
-            _refresh_in_progress.discard("guide_load")
+            get_refresh_in_progress().discard("guide_load")
 
     threading.Thread(target=load, daemon=True).start()
 
@@ -540,7 +558,7 @@ async def epg_events(_user: Annotated[dict, Depends(require_auth)]):
     async def event_stream():
         try:
             # If EPG already loaded, send immediately
-            if epg_db.has_programs():
+            if epg.has_programs():
                 yield "data: epg_ready\n\n"
                 return
             # Wait for EPG ready event or shutdown
@@ -579,14 +597,14 @@ async def guide_page(
             )
 
     # If no channel data in memory, try file cache first (async to avoid blocking)
-    if "live_categories" not in _cache or "live_streams" not in _cache:
+    if "live_categories" not in get_cache() or "live_streams" not in get_cache():
         cached = await asyncio.to_thread(load_file_cache, "live_data")
         if cached:
             data, _ = cached
-            with _cache_lock:
-                _cache["live_categories"] = data["cats"]
-                _cache["live_streams"] = data["streams"]
-                _cache["epg_urls"] = parse_epg_urls(data.get("epg_urls", []))
+            with get_cache_lock():
+                get_cache()["live_categories"] = data["cats"]
+                get_cache()["live_streams"] = data["streams"]
+                get_cache()["epg_urls"] = parse_epg_urls(data.get("epg_urls", []))
         else:
             # No cache at all - start background load and show loading page
             _start_guide_background_load()
@@ -606,10 +624,82 @@ async def guide_page(
                 },
             )
 
-    categories = _cache["live_categories"]
-    all_streams = _cache["live_streams"]
+    categories = get_cache()["live_categories"]
     # EPG is optional - check sqlite db for data
-    epg_loading = not epg_db.has_programs()
+    epg_loading = not epg.has_programs()
+
+    # Get the full saved filter for dropdown (not just current URL filter)
+    user_settings = load_user_settings(username)
+    saved_filter = set(user_settings.get("guide_filter", []))
+
+    # Use helper to get filtered/sorted streams
+    streams, ordered_cats, selected_cats = _get_guide_streams(cats, username)
+    total_count = len(streams)
+
+    # Time window: 3 hours starting from offset
+    now = datetime.now(UTC)
+    window_start = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=offset)
+    window_end = window_start + timedelta(hours=3)
+
+    # Virtual scrolling: only render first batch (130 rows)
+    # JS will handle fetching more as user scrolls
+    initial_batch_size = 130
+    grid_data = _build_guide_rows(streams, 0, initial_batch_size, window_start, window_end)
+
+    # Time markers (every 30 min) - convert to local time for display
+    time_markers = []
+    for i in range(7):  # 0, 30, 60, 90, 120, 150, 180 minutes
+        t = window_start + timedelta(minutes=i * 30)
+        t_local = t.astimezone()  # Convert to local timezone
+        time_markers.append(
+            {
+                "label": t_local.strftime("%H:%M"),
+                "left_pct": (i * 30 / 180) * 100,
+            }
+        )
+
+    # Mobile time markers (2 hour window instead of 3)
+    time_markers_mobile = []
+    for i in range(5):  # 0, 30, 60, 90, 120 minutes
+        t = window_start + timedelta(minutes=i * 30)
+        t_local = t.astimezone()
+        time_markers_mobile.append(
+            {
+                "label": t_local.strftime("%H:%M"),
+                "left_pct": (i * 30 / 120) * 100,
+            }
+        )
+
+    return TEMPLATES.TemplateResponse(
+        request,
+        "guide.html",
+        {
+            "categories": categories,
+            "selected_cats": selected_cats,
+            "saved_filter": saved_filter,  # Full saved filter for dropdown
+            "cats_param": cats,
+            "grid_data": grid_data,
+            "time_markers": time_markers,
+            "time_markers_mobile": time_markers_mobile,
+            "offset": offset,
+            "window_start": window_start.strftime("%Y-%m-%d %H:%M"),
+            "epg_error": get_cache().get("epg_error"),
+            "epg_loading": epg_loading,
+            "channel_count": len(grid_data),
+            "total_count": total_count,  # For virtual scrolling
+            "loading": False,
+            "content_access": _get_content_access(username),
+        },
+    )
+
+
+def _get_guide_streams(cats: str, username: str) -> tuple[list[dict], list[str], set[str]]:
+    """Get filtered and sorted streams for guide.
+
+    Returns:
+        Tuple of (filtered_streams, ordered_cat_ids, selected_cat_set)
+    """
+    all_streams = get_cache().get("live_streams", [])
 
     # Parse selected category IDs (ordered list)
     ordered_cats: list[str] = []
@@ -617,57 +707,77 @@ async def guide_page(
         ordered_cats = [c.strip() for c in cats.split(",") if c.strip()]
     selected_cats = set(ordered_cats)
 
+    if not selected_cats:
+        return [], ordered_cats, selected_cats
+
     # Get user's unavailable groups for filtering
     user_limits = auth.get_user_limits(username)
     unavailable_groups = set(user_limits.get("unavailable_groups", []))
 
-    # Filter and sort streams by category order
-    if selected_cats:
-        cat_order = {c: i for i, c in enumerate(ordered_cats)}
+    cat_order = {c: i for i, c in enumerate(ordered_cats)}
 
-        def stream_sort_key(s: dict) -> int:
-            for c in s.get("category_ids") or []:
-                if str(c) in cat_order:
-                    return cat_order[str(c)]
-            return len(ordered_cats)
+    def stream_sort_key(s: dict) -> int:
+        for c in s.get("category_ids") or []:
+            if str(c) in cat_order:
+                return cat_order[str(c)]
+        return len(ordered_cats)
 
-        def stream_allowed(s: dict) -> bool:
-            """Check if stream is allowed (not in any unavailable group)."""
-            cat_ids = s.get("category_ids") or []
-            # Stream is blocked if ANY of its categories are unavailable
-            return not any(f"cat:{c}" in unavailable_groups for c in cat_ids)
+    def stream_allowed(s: dict) -> bool:
+        cat_ids = s.get("category_ids") or []
+        return not any(f"cat:{c}" in unavailable_groups for c in cat_ids)
 
-        streams = [
-            s
-            for s in all_streams
-            if any(str(c) in selected_cats for c in (s.get("category_ids") or []))
-            and stream_allowed(s)
-        ]
-        streams.sort(key=stream_sort_key)
-    else:
-        streams = []
+    streams = [
+        s
+        for s in all_streams
+        if any(str(c) in selected_cats for c in (s.get("category_ids") or [])) and stream_allowed(s)
+    ]
+    streams.sort(key=stream_sort_key)
 
-    # Build channel list with EPG IDs
+    return streams, ordered_cats, selected_cats
+
+
+def _build_guide_rows(
+    streams: list[dict],
+    start_idx: int,
+    count: int,
+    window_start: datetime,
+    window_end: datetime,
+) -> list[dict]:
+    """Build guide grid rows for a range of streams.
+
+    Returns:
+        List of row dicts with channel info and programs.
+    """
+    end_idx = min(start_idx + count, len(streams))
+    slice_streams = streams[start_idx:end_idx]
+
+    if not slice_streams:
+        return []
+
     # Collect EPG IDs for batch query
-    epg_ids = [s.get("epg_channel_id") or "" for s in streams]
+    epg_ids = [s.get("epg_channel_id") or "" for s in slice_streams]
     epg_ids_set = [e for e in epg_ids if e]
 
     # Batch fetch icons and programs
-    icons_map = epg_db.get_icons_batch(epg_ids_set) if epg_ids_set else {}
+    icons_map = epg.get_icons_batch(epg_ids_set) if epg_ids_set else {}
 
-    # Time window: 3 hours starting from offset
-    now = datetime.now(UTC)
-    window_start = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=offset)
-    window_end = window_start + timedelta(hours=3)
-
+    # Build preferred_sources for EPG matching
+    preferred_sources = {
+        epg_id: s.get("source_id", "")
+        for s, epg_id in zip(slice_streams, epg_ids, strict=False)
+        if epg_id and s.get("source_id")
+    }
     programs_map = (
-        epg_db.get_programs_batch(epg_ids_set, window_start, window_end) if epg_ids_set else {}
+        epg.get_programs_batch(epg_ids_set, window_start, window_end, preferred_sources)
+        if epg_ids_set
+        else {}
     )
 
-    # Build channel list and grid data
+    # Build rows
     window_end_mobile = window_start + timedelta(hours=2)
     grid_data = []
-    for s, epg_id in zip(streams, epg_ids, strict=False):
+
+    for idx, (s, epg_id) in enumerate(zip(slice_streams, epg_ids, strict=False), start=start_idx):
         icon = s.get("stream_icon", "") or icons_map.get(epg_id, "")
         ch = {
             "stream_id": s["stream_id"],
@@ -675,7 +785,8 @@ async def guide_page(
             "icon": icon,
             "epg_id": epg_id,
         }
-        row = {"channel": ch, "programs": [], "programs_mobile": []}
+        row = {"channel": ch, "programs": [], "programs_mobile": [], "index": idx}
+
         for p in programs_map.get(epg_id, []):
             p_start = max(p.start, window_start)
             p_end = min(p.stop, window_end)
@@ -709,69 +820,72 @@ async def guide_page(
                         "width_pct": width_pct_m,
                     }
                 )
+
         grid_data.append(row)
 
-    # Time markers (every 30 min) - convert to local time for display
-    time_markers = []
-    for i in range(7):  # 0, 30, 60, 90, 120, 150, 180 minutes
-        t = window_start + timedelta(minutes=i * 30)
-        t_local = t.astimezone()  # Convert to local timezone
-        time_markers.append(
-            {
-                "label": t_local.strftime("%H:%M"),
-                "left_pct": (i * 30 / 180) * 100,
-            }
-        )
+    return grid_data
 
-    # Mobile time markers (2 hour window instead of 3)
-    time_markers_mobile = []
-    for i in range(5):  # 0, 30, 60, 90, 120 minutes
-        t = window_start + timedelta(minutes=i * 30)
-        t_local = t.astimezone()
-        time_markers_mobile.append(
-            {
-                "label": t_local.strftime("%H:%M"),
-                "left_pct": (i * 30 / 120) * 100,
-            }
-        )
 
-    return TEMPLATES.TemplateResponse(
-        request,
-        "guide.html",
-        {
-            "categories": categories,
-            "selected_cats": selected_cats,
-            "cats_param": cats,
-            "grid_data": grid_data,
-            "time_markers": time_markers,
-            "time_markers_mobile": time_markers_mobile,
-            "offset": offset,
-            "window_start": window_start.strftime("%Y-%m-%d %H:%M"),
-            "epg_error": _cache.get("epg_error"),
-            "epg_loading": epg_loading,
-            "channel_count": len(grid_data),
-            "loading": False,
-            "content_access": _get_content_access(username),
-        },
-    )
+@app.get("/api/guide/rows")
+async def guide_rows_api(
+    user: Annotated[dict, Depends(require_auth)],
+    start: int = Query(default=0, ge=0, description="Starting row index"),
+    count: int = Query(default=130, ge=1, le=500, description="Number of rows to fetch"),
+    offset: int = Query(default=0, ge=-168, le=168, description="Hours offset from now"),
+    cats: str = "",
+):
+    """API endpoint for virtual scrolling - returns guide rows as JSON."""
+    username = user.get("sub", "")
+
+    # Use saved filter if no cats provided
+    if not cats:
+        user_settings = load_user_settings(username)
+        saved = user_settings.get("guide_filter", [])
+        if saved:
+            cats = ",".join(saved)
+
+    # Ensure data is loaded
+    if "live_streams" not in get_cache():
+        cached = await asyncio.to_thread(load_file_cache, "live_data")
+        if cached:
+            data, _ = cached
+            with get_cache_lock():
+                get_cache()["live_categories"] = data["cats"]
+                get_cache()["live_streams"] = data["streams"]
+                get_cache()["epg_urls"] = parse_epg_urls(data.get("epg_urls", []))
+
+    streams, _, _ = _get_guide_streams(cats, username)
+    total_count = len(streams)
+
+    if total_count == 0:
+        return JSONResponse({"rows": [], "total": 0, "start": start})
+
+    # Time window
+    now = datetime.now(UTC)
+    window_start = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=offset)
+    window_end = window_start + timedelta(hours=3)
+
+    rows = _build_guide_rows(streams, start, count, window_start, window_end)
+
+    return JSONResponse({"rows": rows, "total": total_count, "start": start})
 
 
 def _start_vod_background_load() -> None:
     """Start background loading of VOD data if not already in progress."""
-    if "vod_load" in _refresh_in_progress:
+    if "vod_load" in get_refresh_in_progress():
         return
-    _refresh_in_progress.add("vod_load")
+    get_refresh_in_progress().add("vod_load")
 
     def load():
         try:
             log.info("Loading VOD data in background")
             vod_cats, vod_streams = load_vod_data()
-            with _cache_lock:
-                _cache["vod_categories"] = vod_cats
-                _cache["vod_streams"] = vod_streams
+            with get_cache_lock():
+                get_cache()["vod_categories"] = vod_cats
+                get_cache()["vod_streams"] = vod_streams
             log.info("VOD data loaded")
         finally:
-            _refresh_in_progress.discard("vod_load")
+            get_refresh_in_progress().discard("vod_load")
 
     threading.Thread(target=load, daemon=True).start()
 
@@ -784,12 +898,12 @@ async def vod_page(
     sort: str | None = None,
 ):
     # Load from file cache if not in memory (async to avoid blocking)
-    if "vod_categories" not in _cache or "vod_streams" not in _cache:
+    if "vod_categories" not in get_cache() or "vod_streams" not in get_cache():
         cached = await asyncio.to_thread(load_file_cache, "vod_data")
         if cached:
             data, _ = cached
-            _cache["vod_categories"] = data["cats"]
-            _cache["vod_streams"] = data["streams"]
+            get_cache()["vod_categories"] = data["cats"]
+            get_cache()["vod_streams"] = data["streams"]
         else:
             # No cache - start background load and show loading page
             _start_vod_background_load()
@@ -825,12 +939,19 @@ async def vod_page(
         source_id = s.get("source_id", "")
         return f"movies:{source_id}" not in unavailable_groups
 
-    streams = [s for s in _cache["vod_streams"] if movie_allowed(s)]
+    streams = [s for s in get_cache()["vod_streams"] if movie_allowed(s)]
     categories = [
         c
-        for c in _cache["vod_categories"]
+        for c in get_cache()["vod_categories"]
         if f"movies:{c.get('source_id', '')}" not in unavailable_groups
     ]
+
+    # Apply user's VOD category filter (if set)
+    vod_filter = user_settings.get("vod_filter", [])
+    if vod_filter:
+        vod_filter_set = set(str(c) for c in vod_filter)
+        categories = [c for c in categories if str(c.get("category_id")) in vod_filter_set]
+        streams = [s for s in streams if str(s.get("category_id")) in vod_filter_set]
 
     # Filter by category if specified
     if category:
@@ -840,7 +961,7 @@ async def vod_page(
     if sort == "alpha":
         streams.sort(key=lambda s: (s.get("name") or "").lower())
     elif sort == "rating":
-        streams.sort(key=lambda s: float(s.get("rating") or 0), reverse=True)
+        streams.sort(key=lambda s: _safe_float(s.get("rating")), reverse=True)
     elif sort == "newest":
         streams.sort(key=lambda s: int(s.get("added") or 0), reverse=True)
 
@@ -860,20 +981,20 @@ async def vod_page(
 
 def _start_series_background_load() -> None:
     """Start background loading of series data if not already in progress."""
-    if "series_load" in _refresh_in_progress:
+    if "series_load" in get_refresh_in_progress():
         return
-    _refresh_in_progress.add("series_load")
+    get_refresh_in_progress().add("series_load")
 
     def load():
         try:
             log.info("Loading series data in background")
             series_cats, series_list = load_series_data()
-            with _cache_lock:
-                _cache["series_categories"] = series_cats
-                _cache["series"] = series_list
+            with get_cache_lock():
+                get_cache()["series_categories"] = series_cats
+                get_cache()["series"] = series_list
             log.info("Series data loaded")
         finally:
-            _refresh_in_progress.discard("series_load")
+            get_refresh_in_progress().discard("series_load")
 
     threading.Thread(target=load, daemon=True).start()
 
@@ -886,12 +1007,12 @@ async def series_page(
     sort: str | None = None,
 ):
     # Load from file cache if not in memory (async to avoid blocking)
-    if "series_categories" not in _cache or "series" not in _cache:
+    if "series_categories" not in get_cache() or "series" not in get_cache():
         cached = await asyncio.to_thread(load_file_cache, "series_data")
         if cached:
             data, _ = cached
-            _cache["series_categories"] = data["cats"]
-            _cache["series"] = data["series"]
+            get_cache()["series_categories"] = data["cats"]
+            get_cache()["series"] = data["series"]
         else:
             # No cache - start background load and show loading page
             _start_series_background_load()
@@ -927,12 +1048,19 @@ async def series_page(
         source_id = s.get("source_id", "")
         return f"series:{source_id}" not in unavailable_groups
 
-    series = [s for s in _cache["series"] if series_allowed(s)]
+    series = [s for s in get_cache()["series"] if series_allowed(s)]
     categories = [
         c
-        for c in _cache["series_categories"]
+        for c in get_cache()["series_categories"]
         if f"series:{c.get('source_id', '')}" not in unavailable_groups
     ]
+
+    # Apply user's series category filter (if set)
+    series_filter = user_settings.get("series_filter", [])
+    if series_filter:
+        series_filter_set = set(str(c) for c in series_filter)
+        categories = [c for c in categories if str(c.get("category_id")) in series_filter_set]
+        series = [s for s in series if str(s.get("category_id")) in series_filter_set]
 
     # Filter by category if specified
     if category:
@@ -942,7 +1070,7 @@ async def series_page(
     if sort == "alpha":
         series.sort(key=lambda s: (s.get("name") or "").lower())
     elif sort == "rating":
-        series.sort(key=lambda s: float(s.get("rating") or 0), reverse=True)
+        series.sort(key=lambda s: _safe_float(s.get("rating")), reverse=True)
     elif sort == "newest":
         series.sort(key=lambda s: int(s.get("last_modified") or 0), reverse=True)
 
@@ -969,10 +1097,11 @@ async def series_detail_page(
 ):
     username = user.get("sub", "")
 
-    # Check access for this specific series
-    if "series" in _cache:
+    # Check access for this specific series and get source_id
+    source_id = ""
+    if "series" in get_cache():
         cached_series = next(
-            (s for s in _cache["series"] if str(s.get("series_id")) == str(series_id)),
+            (s for s in get_cache()["series"] if str(s.get("series_id")) == str(series_id)),
             None,
         )
         if cached_series:
@@ -982,10 +1111,13 @@ async def series_detail_page(
             if f"series:{source_id}" in unavailable_groups:
                 raise HTTPException(403, "Access to this series is restricted")
 
-    xtream = get_first_xtream_client()
+    # Use the series' source, fall back to first Xtream source
+    xtream = get_xtream_client_by_source(source_id) if source_id else None
+    if not xtream:
+        xtream = get_first_xtream_client()
     if not xtream:
         raise HTTPException(404, "No Xtream source configured")
-    cache_key = f"series_info_{series_id}"
+    cache_key = f"series_info_{source_id}_{series_id}" if source_id else f"series_info_{series_id}"
     try:
         series_data = await asyncio.to_thread(
             get_cached_info, cache_key, lambda: xtream.get_series_info(series_id), refresh
@@ -1064,12 +1196,12 @@ async def movie_detail_page(
     username = user.get("sub", "")
 
     # Load from file cache if not in memory
-    if "vod_streams" not in _cache:
+    if "vod_streams" not in get_cache():
         vod_cats, vod_streams = load_vod_data()
-        _cache["vod_categories"] = vod_cats
-        _cache["vod_streams"] = vod_streams
+        get_cache()["vod_categories"] = vod_cats
+        get_cache()["vod_streams"] = vod_streams
 
-    vod_streams = _cache.get("vod_streams", [])
+    vod_streams = get_cache().get("vod_streams", [])
     movie = next((m for m in vod_streams if m.get("stream_id") == stream_id), None)
 
     # Check access for this specific movie
@@ -1082,9 +1214,14 @@ async def movie_detail_page(
 
     # Fetch detailed movie info
     if movie:
-        xtream = get_first_xtream_client()
+        source_id = movie.get("source_id", "")
+        xtream = get_xtream_client_by_source(source_id) if source_id else None
+        if not xtream:
+            xtream = get_first_xtream_client()
         if xtream:
-            cache_key = f"vod_info_{stream_id}"
+            cache_key = (
+                f"vod_info_{source_id}_{stream_id}" if source_id else f"vod_info_{stream_id}"
+            )
             try:
                 vod_info = await asyncio.to_thread(
                     get_cached_info, cache_key, lambda: xtream.get_vod_info(stream_id)
@@ -1148,7 +1285,7 @@ def _get_live_player_info(stream_id: str) -> PlayerInfo:
     """Get player info for live stream."""
     _ensure_live_cache()
     stream = next(
-        (s for s in _cache["live_streams"] if str(s.get("stream_id")) == stream_id),
+        (s for s in get_cache()["live_streams"] if str(s.get("stream_id")) == stream_id),
         None,
     )
     if not stream:
@@ -1162,6 +1299,9 @@ def _get_live_player_info(stream_id: str) -> PlayerInfo:
     elif stream.get("source_type") == "xtream":
         base, user, pwd = stream["source_url"], stream["source_username"], stream["source_password"]
         orig_id = stream_id.split("_")[-1] if "_" in stream_id else stream_id
+        # URL-encode username/password to handle special chars like # in passwords
+        user = urllib.parse.quote(user, safe="")
+        pwd = urllib.parse.quote(pwd, safe="")
         info.url = f"{base}/live/{user}/{pwd}/{orig_id}.m3u8"
 
     # Look up source settings
@@ -1178,7 +1318,7 @@ def _get_live_player_info(stream_id: str) -> PlayerInfo:
     epg_id = stream.get("epg_channel_id") or ""
     if epg_id:
         now = datetime.now(UTC)
-        programs = epg_db.get_programs_in_range(epg_id, now, now + timedelta(minutes=1))
+        programs = epg.get_programs_in_range(epg_id, now, now + timedelta(minutes=1))
         if programs:
             info.program_title, info.program_desc = programs[0].title, programs[0].desc
     return info
@@ -1186,23 +1326,27 @@ def _get_live_player_info(stream_id: str) -> PlayerInfo:
 
 def _get_movie_player_info(stream_id: str, ext: str) -> PlayerInfo:
     """Get player info for movie."""
-    xtream = get_first_xtream_client()
+    # Find movie in cache to get its source_id
+    cached_movie = None
+    if "vod_streams" in get_cache():
+        cached_movie = next(
+            (m for m in get_cache()["vod_streams"] if str(m.get("stream_id")) == str(stream_id)),
+            None,
+        )
+
+    # Get client for the movie's source (fall back to first if not found)
+    source_id = cached_movie.get("source_id", "") if cached_movie else ""
+    xtream = get_xtream_client_by_source(source_id) if source_id else None
+    if not xtream:
+        xtream = get_first_xtream_client()
     if not xtream:
         return PlayerInfo()
 
     ext = ext or "mkv"
     info = PlayerInfo(url=xtream.build_stream_url("movie", int(stream_id), ext))
+    info.source_id = source_id
 
-    # Get source_id from cached movie data for access control
-    if "vod_streams" in _cache:
-        cached_movie = next(
-            (m for m in _cache["vod_streams"] if str(m.get("stream_id")) == str(stream_id)),
-            None,
-        )
-        if cached_movie:
-            info.source_id = cached_movie.get("source_id", "")
-
-    cache_key = f"vod_info_{stream_id}"
+    cache_key = f"vod_info_{source_id}_{stream_id}"
     try:
         movie = get_cached_info(cache_key, lambda: xtream.get_vod_info(int(stream_id)))
     except (urllib.error.URLError, TimeoutError):
@@ -1220,39 +1364,32 @@ def _get_series_player_info(
     stream_id: str, series_id: int | None, ext: str
 ) -> tuple[PlayerInfo, str | None]:
     """Get player info for series episode. Returns (info, next_episode_url)."""
-    xtream = get_first_xtream_client()
+    # Find series in cache to get its source_id
+    cached_series = None
+    source_id = ""
+    if series_id and "series" in get_cache():
+        cached_series = next(
+            (s for s in get_cache()["series"] if str(s.get("series_id")) == str(series_id)),
+            None,
+        )
+        if cached_series:
+            source_id = cached_series.get("source_id", "")
+
+    # Get client for the series' source (fall back to first if not found)
+    xtream = get_xtream_client_by_source(source_id) if source_id else None
+    if not xtream:
+        xtream = get_first_xtream_client()
     if not xtream:
         return PlayerInfo(), None
 
     ext = ext or "mkv"
     info = PlayerInfo(url=xtream.build_stream_url("series", int(stream_id), ext))
-
-    # Get source_id from cached series data for access control
-    if series_id and "series" in _cache:
-        cached_series = next(
-            (s for s in _cache["series"] if str(s.get("series_id")) == str(series_id)),
-            None,
-        )
-        if cached_series:
-            info.source_id = cached_series.get("source_id", "")
-            log.info("Series %s found in cache, source_id=%s", series_id, info.source_id)
-        else:
-            log.warning(
-                "Series %s not found in cache (cache has %d entries)",
-                series_id,
-                len(_cache["series"]),
-            )
-    else:
-        log.warning(
-            "Series lookup skipped: series_id=%s, 'series' in cache=%s",
-            series_id,
-            "series" in _cache,
-        )
+    info.source_id = source_id
 
     if not series_id:
         return info, None
 
-    cache_key = f"series_info_{series_id}"
+    cache_key = f"series_info_{source_id}_{series_id}"
     try:
         series = get_cached_info(cache_key, lambda: xtream.get_series_info(series_id))
     except (urllib.error.URLError, TimeoutError) as e:
@@ -1296,15 +1433,15 @@ def _get_series_player_info(
 
 def _ensure_live_cache() -> None:
     """Ensure live streams and EPG are loaded."""
-    if "live_streams" not in _cache:
+    if "live_streams" not in get_cache():
         cats, streams, epg_urls = load_all_live_data()
-        with _cache_lock:
-            _cache["live_categories"] = cats
-            _cache["live_streams"] = streams
-            _cache["epg_urls"] = epg_urls
-    if not epg_db.has_programs():
+        with get_cache_lock():
+            get_cache()["live_categories"] = cats
+            get_cache()["live_streams"] = streams
+            get_cache()["epg_urls"] = epg_urls
+    if not epg.has_programs():
         with contextlib.suppress(Exception):
-            load_all_epg(_cache.get("epg_urls", []))
+            load_all_epg(get_cache().get("epg_urls", []))
 
 
 @app.get("/play/{stream_type}/{stream_id:path}", response_class=HTMLResponse)
@@ -1363,9 +1500,14 @@ async def player_page(
     server_settings = load_server_settings()
     user_settings = load_user_settings(username)
     transcode_mode = server_settings.get("transcode_mode", "auto")
-    needs_transcode = info.is_m3u or ext in ("mkv", "mp4", "avi", "wmv", "flv")
-    if transcode_mode != "never" and needs_transcode:
-        transcode_mode = "always"
+    if transcode_mode == "auto":
+        needs_transcode = info.is_m3u or ext in ("mkv", "mp4", "avi", "wmv", "flv")
+        is_https = (
+            request.url.scheme == "https" or request.headers.get("x-forwarded-proto") == "https"
+        )
+        mixed_content = is_https and info.url.startswith("http://")
+        if needs_transcode or mixed_content:
+            transcode_mode = "always"
 
     # Get saved watch position for VOD (per-user)
     resume_position = 0.0
@@ -1417,6 +1559,7 @@ async def search_page(
     live: bool = False,
     vod: bool = False,
     series: bool = False,
+    limit: int = 100,
 ):
     results: dict[str, list] = {"live": [], "vod": [], "series": []}
 
@@ -1450,35 +1593,43 @@ async def search_page(
 
         # Load live data (run in thread to avoid blocking)
         if live:
-            if "live_streams" not in _cache:
+            if "live_streams" not in get_cache():
                 cats, streams, epg_urls = await asyncio.to_thread(load_all_live_data)
-                with _cache_lock:
-                    _cache["live_categories"] = cats
-                    _cache["live_streams"] = streams
-                    _cache["epg_urls"] = epg_urls
-            results["live"] = [s for s in _cache["live_streams"] if match_fn(s.get("name") or "")][
-                :20
-            ]
+                with get_cache_lock():
+                    get_cache()["live_categories"] = cats
+                    get_cache()["live_streams"] = streams
+                    get_cache()["epg_urls"] = epg_urls
+            matched = sorted(
+                [s for s in get_cache()["live_streams"] if match_fn(s.get("name") or "")],
+                key=lambda x: x.get("name", "").lower(),
+            )
+            results["live"] = matched[:limit] if limit else matched
 
         # Load VOD data (run in thread to avoid blocking)
         if vod:
-            if "vod_streams" not in _cache:
+            if "vod_streams" not in get_cache():
                 vod_cats, vod_streams = await asyncio.to_thread(load_vod_data)
-                with _cache_lock:
-                    _cache["vod_categories"] = vod_cats
-                    _cache["vod_streams"] = vod_streams
-            results["vod"] = [s for s in _cache["vod_streams"] if match_fn(s.get("name") or "")][
-                :20
-            ]
+                with get_cache_lock():
+                    get_cache()["vod_categories"] = vod_cats
+                    get_cache()["vod_streams"] = vod_streams
+            matched = sorted(
+                [s for s in get_cache()["vod_streams"] if match_fn(s.get("name") or "")],
+                key=lambda x: x.get("name", "").lower(),
+            )
+            results["vod"] = matched[:limit] if limit else matched
 
         # Load series data (run in thread to avoid blocking)
         if series:
-            if "series" not in _cache:
+            if "series" not in get_cache():
                 series_cats, series_list = await asyncio.to_thread(load_series_data)
-                with _cache_lock:
-                    _cache["series_categories"] = series_cats
-                    _cache["series"] = series_list
-            results["series"] = [s for s in _cache["series"] if match_fn(s.get("name") or "")][:20]
+                with get_cache_lock():
+                    get_cache()["series_categories"] = series_cats
+                    get_cache()["series"] = series_list
+            matched = sorted(
+                [s for s in get_cache()["series"] if match_fn(s.get("name") or "")],
+                key=lambda x: x.get("name", "").lower(),
+            )
+            results["series"] = matched[:limit] if limit else matched
 
     username = user.get("sub", "")
     user_settings = load_user_settings(username)
@@ -1504,6 +1655,28 @@ async def search_page(
         s for s in results["series"] if f"series:{s.get('source_id', '')}" not in unavailable_groups
     ]
 
+    # Apply user's category filters from settings
+    guide_filter = user_settings.get("guide_filter", [])
+    if guide_filter:
+        guide_filter_set = set(str(c) for c in guide_filter)
+        results["live"] = [
+            s
+            for s in results["live"]
+            if any(str(cat_id) in guide_filter_set for cat_id in (s.get("category_ids") or []))
+        ]
+
+    vod_filter = user_settings.get("vod_filter", [])
+    if vod_filter:
+        vod_filter_set = set(str(c) for c in vod_filter)
+        results["vod"] = [s for s in results["vod"] if str(s.get("category_id")) in vod_filter_set]
+
+    series_filter = user_settings.get("series_filter", [])
+    if series_filter:
+        series_filter_set = set(str(c) for c in series_filter)
+        results["series"] = [
+            s for s in results["series"] if str(s.get("category_id")) in series_filter_set
+        ]
+
     content_access = _get_content_access(username)
     return TEMPLATES.TemplateResponse(
         request,
@@ -1515,6 +1688,7 @@ async def search_page(
             "search_live": live,
             "search_vod": vod and content_access["movies"],
             "search_series": series and content_access["series"],
+            "limit": limit,
             "favorites": user_settings.get("favorites", {"series": {}, "movies": {}}),
             "content_access": content_access,
         },
@@ -1552,7 +1726,7 @@ async def playlist_xspf(
 
 
 # =============================================================================
-# Transcoding routes (logic in transcoding.py)
+# Transcoding routes (logic in ffmpeg_session.py)
 # =============================================================================
 
 
@@ -1585,7 +1759,7 @@ async def transcode_start(
         if source:
             source_max_streams = source.get("max_streams", 0)
 
-    return await transcoding._start_transcode(
+    return await ffmpeg_session.start_transcode(
         url,
         content_type,
         series_id,
@@ -1606,7 +1780,7 @@ async def transcode_seek(
     _user: Annotated[dict, Depends(require_auth)],
 ):
     """Seek VOD transcode to a new position."""
-    return await transcoding.seek_transcode(session_id, time)
+    return await ffmpeg_session.seek_transcode(session_id, time)
 
 
 @app.get("/transcode/progress/{session_id}")
@@ -1615,7 +1789,7 @@ async def transcode_progress(
     _user: Annotated[dict, Depends(require_auth)],
 ):
     """Get transcode progress (segment count, duration)."""
-    progress = transcoding.get_session_progress(session_id)
+    progress = ffmpeg_session.get_session_progress(session_id)
     if not progress:
         raise HTTPException(404, "Session not found")
     return progress
@@ -1633,7 +1807,7 @@ async def transcode_file(
     if safe_filename != filename or ".." in filename:
         raise HTTPException(400, "Invalid filename")
 
-    session = transcoding.get_session(session_id)
+    session = ffmpeg_session.get_session(session_id)
     if not session:
         log.debug(f"[CAST] 404 session not found: {session_id}")
         raise HTTPException(404, "Transcode session not found")
@@ -1671,7 +1845,7 @@ async def subtitle_file(session_id: str, filename: str):
         raise HTTPException(400, "Invalid filename")
     if not safe_filename.endswith(".vtt"):
         raise HTTPException(400, "Only VTT files allowed")
-    session = transcoding.get_session(session_id)
+    session = ffmpeg_session.get_session(session_id)
     if not session:
         raise HTTPException(404, "Session not found")
     file_path = pathlib.Path(session["dir"]) / safe_filename
@@ -1680,7 +1854,11 @@ async def subtitle_file(session_id: str, filename: str):
         if file_path.exists() and file_path.stat().st_size > 20:
             break
         await asyncio.sleep(0.2)
-    content = file_path.read_text() if file_path.exists() else "WEBVTT\n\n"
+    try:
+        content = file_path.read_text() if file_path.exists() else "WEBVTT\n\n"
+    except (UnicodeDecodeError, OSError):
+        # File may be partially written or corrupted
+        content = "WEBVTT\n\n"
     return Response(
         content=content,
         media_type="text/vtt",
@@ -1694,7 +1872,7 @@ async def transcode_stop(
     _user: Annotated[dict, Depends(require_auth)],
 ):
     """Stop a transcode session (VOD sessions stay cached)."""
-    transcoding.stop_session(session_id, force=False)
+    ffmpeg_session.stop_session(session_id, force=False)
     return {"status": "stopped"}
 
 
@@ -1704,7 +1882,7 @@ async def transcode_stop_post(
     _user: Annotated[dict, Depends(require_auth)],
 ):
     """Stop a transcode session (POST for sendBeacon, VOD cached)."""
-    transcoding.stop_session(session_id, force=False)
+    ffmpeg_session.stop_session(session_id, force=False)
     return {"status": "stopped"}
 
 
@@ -1714,9 +1892,9 @@ async def transcode_clear(
     _user: Annotated[dict, Depends(require_auth)],
 ):
     """Force-delete any cached transcode session for a URL."""
-    session_id = transcoding.clear_url_session(url)
+    session_id = ffmpeg_session.clear_url_session(url)
     if session_id:
-        transcoding.stop_session(session_id, force=True)
+        ffmpeg_session.stop_session(session_id, force=True)
         log.info("Force-cleared transcode session %s for URL", session_id)
     return {"status": "cleared", "session_id": session_id}
 
@@ -1733,7 +1911,7 @@ def _build_all_groups() -> list[dict[str, str]]:
     sources_by_id = {s.id: s for s in get_sources()}
 
     # Live TV categories
-    for cat in _cache.get("live_categories", []):
+    for cat in get_cache().get("live_categories", []):
         source_id = cat.get("source_id", "")
         source = sources_by_id.get(source_id)
         if source:
@@ -1822,25 +2000,48 @@ async def settings_page(request: Request, user: Annotated[dict, Depends(require_
     server_settings = load_server_settings()
     user_settings = load_user_settings(username)
     # Load categories (from file cache or trigger background load)
-    if "live_categories" not in _cache:
+    if "live_categories" not in get_cache():
         cached = await asyncio.to_thread(load_file_cache, "live_data")
         if cached:
             data, _ = cached
-            with _cache_lock:
-                _cache["live_categories"] = data["cats"]
-                _cache["live_streams"] = data["streams"]
-                _cache["epg_urls"] = parse_epg_urls(data.get("epg_urls", []))
+            with get_cache_lock():
+                get_cache()["live_categories"] = data["cats"]
+                get_cache()["live_streams"] = data["streams"]
+                get_cache()["epg_urls"] = parse_epg_urls(data.get("epg_urls", []))
         else:
             # No cache - start background load
             _start_guide_background_load()
 
-    # Filter live categories based on user's unavailable groups
+    # Load VOD categories if not cached
+    if "vod_categories" not in get_cache():
+        cached = await asyncio.to_thread(load_file_cache, "vod_data")
+        if cached:
+            data, _ = cached
+            with get_cache_lock():
+                get_cache()["vod_categories"] = data["cats"]
+                get_cache()["vod_streams"] = data["streams"]
+
+    # Load series categories if not cached
+    if "series_categories" not in get_cache():
+        cached = await asyncio.to_thread(load_file_cache, "series_data")
+        if cached:
+            data, _ = cached
+            with get_cache_lock():
+                get_cache()["series_categories"] = data["cats"]
+                get_cache()["series"] = data["series"]
+
+    # Build source_id -> source_name mapping
+    source_names = {s["id"]: s["name"] for s in server_settings.get("sources", [])}
+
+    # Filter categories based on user's unavailable groups
     user_limits = auth.get_user_limits(username)
     unavailable_groups = set(user_limits.get("unavailable_groups", []))
-    all_live_cats = _cache.get("live_categories", [])
+    all_live_cats = get_cache().get("live_categories", [])
     live_categories = [
         cat for cat in all_live_cats if f"cat:{cat['category_id']}" not in unavailable_groups
     ]
+    vod_categories = get_cache().get("vod_categories", [])
+    series_categories = get_cache().get("series_categories", [])
 
     return TEMPLATES.TemplateResponse(
         request,
@@ -1853,11 +2054,12 @@ async def settings_page(request: Request, user: Annotated[dict, Depends(require_
             "max_resolution": server_settings.get("max_resolution", "1080p"),
             "quality": server_settings.get("quality", "high"),
             "vod_transcode_cache_mins": server_settings.get("vod_transcode_cache_mins", 60),
+            "live_transcode_cache_secs": server_settings.get("live_transcode_cache_secs", 60),
+            "live_dvr_mins": server_settings.get("live_dvr_mins", 0),
+            "transcode_dir": server_settings.get("transcode_dir", ""),
             "probe_live": server_settings.get("probe_live", True),
             "probe_movies": server_settings.get("probe_movies", True),
             "probe_series": server_settings.get("probe_series", False),
-            "sr_available": is_sr_available(),
-            "sr_mode": server_settings.get("sr_mode", "off"),
             "user_agent_preset": server_settings.get("user_agent_preset", "default"),
             "user_agent_custom": server_settings.get("user_agent_custom", ""),
             "available_encoders": AVAILABLE_ENCODERS,
@@ -1868,7 +2070,12 @@ async def settings_page(request: Request, user: Annotated[dict, Depends(require_
             # User settings
             "captions_enabled": user_settings.get("captions_enabled", False),
             "live_categories": live_categories,
+            "vod_categories": vod_categories,
+            "series_categories": series_categories,
+            "source_names": source_names,
             "selected_cats": user_settings.get("guide_filter", []),
+            "selected_vod_cats": user_settings.get("vod_filter", []),
+            "selected_series_cats": user_settings.get("series_filter", []),
             "cc_lang": user_settings.get("cc_lang", ""),
             "cc_style": user_settings.get("cc_style", {}),
             "cast_host": user_settings.get("cast_host", ""),
@@ -1889,6 +2096,38 @@ async def settings_guide_filter(
         raise HTTPException(400, "Invalid filter list")
     user_settings = load_user_settings(username)
     user_settings["guide_filter"] = cats
+    save_user_settings(username, user_settings)
+    return {"status": "ok"}
+
+
+@app.post("/settings/vod-filter")
+async def settings_vod_filter(
+    request: Request,
+    user: Annotated[dict, Depends(require_auth)],
+):
+    username = user.get("sub", "")
+    data = await request.json()
+    cats = data.get("cats", [])
+    if not isinstance(cats, list) or len(cats) > 500:
+        raise HTTPException(400, "Invalid filter list")
+    user_settings = load_user_settings(username)
+    user_settings["vod_filter"] = cats
+    save_user_settings(username, user_settings)
+    return {"status": "ok"}
+
+
+@app.post("/settings/series-filter")
+async def settings_series_filter(
+    request: Request,
+    user: Annotated[dict, Depends(require_auth)],
+):
+    username = user.get("sub", "")
+    data = await request.json()
+    cats = data.get("cats", [])
+    if not isinstance(cats, list) or len(cats) > 500:
+        raise HTTPException(400, "Invalid filter list")
+    user_settings = load_user_settings(username)
+    user_settings["series_filter"] = cats
     save_user_settings(username, user_settings)
     return {"status": "ok"}
 
@@ -2011,7 +2250,9 @@ async def settings_delete_source(
     settings = load_server_settings()
     settings["sources"] = [s for s in settings.get("sources", []) if s["id"] != source_id]
     save_server_settings(settings)
-    clear_all_caches()
+    # Clear all caches including EPG data for this source
+    epg.clear_source(source_id)
+    clear_all_file_caches()
     return RedirectResponse("/settings", status_code=303)
 
 
@@ -2023,42 +2264,42 @@ async def guide_refresh(_user: Annotated[dict, Depends(require_auth)]):
         try:
             log.info("Live refresh: fetching channels")
             cats, streams, epg_urls = load_all_live_data()
-            with _cache_lock:
-                _cache["live_categories"] = cats
-                _cache["live_streams"] = streams
-                _cache["epg_urls"] = epg_urls
+            with get_cache_lock():
+                get_cache()["live_categories"] = cats
+                get_cache()["live_streams"] = streams
+                get_cache()["epg_urls"] = epg_urls
             save_file_cache("live_data", {"cats": cats, "streams": streams, "epg_urls": epg_urls})
             log.info("Live refresh: complete (%d categories, %d streams)", len(cats), len(streams))
         except Exception as e:
             log.error("Live refresh failed: %s", e)
         finally:
-            _refresh_in_progress.discard("live_refresh")
+            get_refresh_in_progress().discard("live_refresh")
 
     def refresh_epg():
         try:
-            epg_urls = _cache.get("epg_urls", [])
+            epg_urls = get_cache().get("epg_urls", [])
             if epg_urls:
                 log.info("EPG refresh: fetching %d sources", len(epg_urls))
-                epg_db.clear()
+                epg.clear()
                 count = _fetch_all_epg(epg_urls)
-                with _cache_lock:
-                    _cache.pop("epg_error", None)
+                with get_cache_lock():
+                    get_cache().pop("epg_error", None)
                 log.info("EPG refresh: complete (%d programs)", count)
             else:
                 log.warning("EPG refresh: no EPG URLs available")
         except Exception as e:
             log.error("EPG refresh failed: %s", e)
-            with _cache_lock:
-                _cache["epg_error"] = str(e)
+            with get_cache_lock():
+                get_cache()["epg_error"] = str(e)
         finally:
-            _refresh_in_progress.discard("epg_refresh")
+            get_refresh_in_progress().discard("epg_refresh")
 
     # Set flags before starting threads to avoid race with status polling
-    if "live_refresh" not in _refresh_in_progress:
-        _refresh_in_progress.add("live_refresh")
+    if "live_refresh" not in get_refresh_in_progress():
+        get_refresh_in_progress().add("live_refresh")
         threading.Thread(target=refresh_live, daemon=True).start()
-    if "epg_refresh" not in _refresh_in_progress:
-        _refresh_in_progress.add("epg_refresh")
+    if "epg_refresh" not in get_refresh_in_progress():
+        get_refresh_in_progress().add("epg_refresh")
         threading.Thread(target=refresh_epg, daemon=True).start()
     return RedirectResponse("/guide?refreshing=1", status_code=303)
 
@@ -2067,8 +2308,8 @@ async def guide_refresh(_user: Annotated[dict, Depends(require_auth)]):
 async def guide_refresh_status(_user: Annotated[dict, Depends(require_auth)]):
     """Return refresh status for polling."""
     return {
-        "live": "live_refresh" in _refresh_in_progress,
-        "epg": "epg_refresh" in _refresh_in_progress,
+        "live": "live_refresh" in get_refresh_in_progress(),
+        "epg": "epg_refresh" in get_refresh_in_progress(),
     }
 
 
@@ -2085,10 +2326,10 @@ async def settings_refresh_source(
         return {"error": "Source not found"}
 
     key = f"{source_id}_{refresh_type}"
-    if key in _refresh_in_progress:
+    if key in get_refresh_in_progress():
         return {"status": "already_running"}
 
-    _refresh_in_progress.add(key)
+    get_refresh_in_progress().add(key)
 
     def do_refresh():
         try:
@@ -2096,25 +2337,28 @@ async def settings_refresh_source(
                 log.info("Refreshing live data for source: %s", source.name)
                 cats, streams, epg_url, timeout = fetch_source_live_data(source)
                 # Update cache by replacing this source's data
-                with _cache_lock:
+                with get_cache_lock():
                     existing_cats = [
                         c
-                        for c in _cache.get("live_categories", [])
+                        for c in get_cache().get("live_categories", [])
                         if c.get("source_id") != source_id
                     ]
                     existing_streams = [
-                        s for s in _cache.get("live_streams", []) if s.get("source_id") != source_id
+                        s
+                        for s in get_cache().get("live_streams", [])
+                        if s.get("source_id") != source_id
                     ]
-                    existing_epg = [e for e in _cache.get("epg_urls", []) if e[2] != source_id]
+                    existing_epg = [e for e in get_cache().get("epg_urls", []) if e[2] != source_id]
                     new_cats = existing_cats + cats
                     new_streams = existing_streams + streams
                     new_epg = existing_epg + ([(epg_url, timeout, source_id)] if epg_url else [])
-                    _cache["live_categories"] = new_cats
-                    _cache["live_streams"] = new_streams
-                    _cache["epg_urls"] = new_epg
+                    get_cache()["live_categories"] = new_cats
+                    get_cache()["live_streams"] = new_streams
+                    get_cache()["epg_urls"] = new_epg
                 # Save to file cache
                 save_file_cache(
-                    "live_data", {"cats": new_cats, "streams": new_streams, "epg_urls": new_epg}
+                    "live_data",
+                    {"cats": new_cats, "streams": new_streams, "epg_urls": new_epg},
                 )
                 log.info(
                     "Live refresh complete for %s: %d cats, %d streams",
@@ -2129,7 +2373,7 @@ async def settings_refresh_source(
                 )
                 epg_url = source.epg_url or (source.url if source.type == "epg" else "")
                 if epg_url:
-                    epg_db.clear_source(source_id)
+                    epg.clear_source(source_id)
                     count = _fetch_all_epg([(epg_url, source.epg_timeout, source_id)])
                     log.info("EPG refresh complete for %s: %d programs", source.name, count)
                 else:
@@ -2137,39 +2381,49 @@ async def settings_refresh_source(
 
             elif refresh_type == "vod" and source.type == "xtream":
                 log.info("Refreshing VOD for source: %s", source.name)
-                cats, streams = fetch_source_vod_data(source)
-                # For now, VOD is single-source, so just replace entirely
-                with _cache_lock:
-                    _cache.pop("vod_categories", None)
-                    _cache.pop("vod_streams", None)
+                new_cats, new_streams = fetch_source_vod_data(source)
+                # Merge with existing data from other sources
+                existing_cats, existing_streams = load_vod_data()
+                # Remove old data from this source, keep others
+                merged_cats = [c for c in existing_cats if c.get("source_id") != source_id]
+                merged_streams = [s for s in existing_streams if s.get("source_id") != source_id]
+                # Add new data from this source
+                merged_cats.extend(new_cats)
+                merged_streams.extend(new_streams)
+                with get_cache_lock():
+                    get_cache().pop("vod_categories", None)
+                    get_cache().pop("vod_streams", None)
                 for f in CACHE_DIR.glob("vod_data*.json"):
                     f.unlink(missing_ok=True)
-                save_file_cache("vod_data", {"cats": cats, "streams": streams})
+                save_file_cache("vod_data", {"cats": merged_cats, "streams": merged_streams})
                 log.info(
-                    "VOD refresh complete for %s: %d cats, %d streams",
+                    "VOD refresh complete for %s: %d cats, %d streams (total: %d)",
                     source.name,
-                    len(cats),
-                    len(streams),
+                    len(new_cats),
+                    len(new_streams),
+                    len(merged_streams),
                 )
 
             elif refresh_type == "m3u" and source.type == "m3u":
                 log.info("Refreshing M3U playlist for source: %s", source.name)
                 cats, streams, detected_epg_url = fetch_m3u(source.url, source.id)
                 update_source_epg_url(source_id, detected_epg_url)
-                with _cache_lock:
+                with get_cache_lock():
                     existing_cats = [
                         c
-                        for c in _cache.get("live_categories", [])
+                        for c in get_cache().get("live_categories", [])
                         if c.get("source_id") != source_id
                     ]
                     existing_streams = [
-                        s for s in _cache.get("live_streams", []) if s.get("source_id") != source_id
+                        s
+                        for s in get_cache().get("live_streams", [])
+                        if s.get("source_id") != source_id
                     ]
                     new_cats = existing_cats + cats
                     new_streams = existing_streams + streams
-                    _cache["live_categories"] = new_cats
-                    _cache["live_streams"] = new_streams
-                    epg_urls = _cache.get("epg_urls", [])
+                    get_cache()["live_categories"] = new_cats
+                    get_cache()["live_streams"] = new_streams
+                    epg_urls = get_cache().get("epg_urls", [])
                 save_file_cache(
                     "live_data",
                     {
@@ -2188,7 +2442,7 @@ async def settings_refresh_source(
         except Exception as e:
             log.error("Source refresh failed (%s/%s): %s", source.name, refresh_type, e)
         finally:
-            _refresh_in_progress.discard(key)
+            get_refresh_in_progress().discard(key)
 
     threading.Thread(target=do_refresh, daemon=True).start()
     return {"status": "started", "key": key}
@@ -2198,7 +2452,7 @@ async def settings_refresh_source(
 async def settings_refresh_status(_user: Annotated[dict, Depends(require_auth)]):
     """Return per-source refresh status."""
     statuses: dict[str, Any] = {}
-    for key in list(_refresh_in_progress):
+    for key in list(get_refresh_in_progress()):
         if "_" in key:
             # Format: source_id_type (e.g., "ota_epg" or "src_123_epg")
             parts = key.rsplit("_", 1)
@@ -2206,7 +2460,7 @@ async def settings_refresh_status(_user: Annotated[dict, Depends(require_auth)])
                 source_id, rtype = parts
                 statuses.setdefault(source_id, {})[rtype] = True
     # Report global guide_load as affecting all sources
-    if "guide_load" in _refresh_in_progress:
+    if "guide_load" in get_refresh_in_progress():
         statuses["_global"] = {"live": True, "epg": True}
     return statuses
 
@@ -2267,30 +2521,82 @@ async def save_user_prefs(
     return {"ok": True}
 
 
+def _fetch_logo(url: str, timeout: int = 10) -> tuple[bytes, str]:
+    """Fetch logo synchronously. Returns (data, content_type)."""
+    from util import safe_urlopen
+
+    with safe_urlopen(url, timeout=timeout) as resp:
+        content_type = resp.headers.get("Content-Type", "")
+        if not content_type.startswith("image/"):
+            raise ValueError("URL is not an image")
+        data = resp.read(LOGO_MAX_SIZE)
+        if len(data) >= LOGO_MAX_SIZE:
+            raise ValueError("Image too large")
+    return data, content_type
+
+
+@app.get("/api/logo")
+async def get_logo(
+    url: str,
+    _user: Annotated[dict, Depends(require_auth)],
+    source: str = "default",
+):
+    """Proxy and cache external logos to avoid mixed-content issues."""
+    if not url:
+        raise HTTPException(400, "Missing url parameter")
+    # Check cache first
+    cached = get_cached_logo(source, url)
+    if cached:
+        return FileResponse(cached, headers={"Cache-Control": f"max-age={LOGO_BROWSER_TTL}"})
+    # Validate URL scheme
+    parsed = urllib.parse.urlparse(url)
+    if parsed.scheme not in ("http", "https"):
+        raise HTTPException(400, "Invalid URL scheme")
+    # Fetch the logo (in thread to avoid blocking)
+    try:
+        data, content_type = await asyncio.to_thread(_fetch_logo, url)
+        path = save_logo(source, url, data, content_type)
+        return FileResponse(path, headers={"Cache-Control": f"max-age={LOGO_BROWSER_TTL}"})
+    except ValueError as e:
+        raise HTTPException(400, str(e)) from None
+    except urllib.error.URLError as e:
+        log.debug("Logo fetch failed for %s: %s", url, e)
+        raise HTTPException(502, "Failed to fetch logo") from None
+    except Exception as e:
+        log.debug("Logo fetch error for %s: %s", url, e)
+        raise HTTPException(500, "Logo fetch error") from None
+
+
 @app.post("/settings/transcode")
 async def settings_transcode(
     _user: Annotated[dict, Depends(require_admin)],
-    mode: Annotated[str, Form()],
-    hw: Annotated[str, Form()],
+    transcode_mode: Annotated[str, Form()],
+    transcode_hw: Annotated[str, Form()],
     max_resolution: Annotated[str, Form()] = "1080p",
     quality: Annotated[str, Form()] = "high",
     vod_transcode_cache_mins: Annotated[int, Form()] = 60,
+    live_transcode_cache_secs: Annotated[int, Form()] = 0,
+    live_dvr_mins: Annotated[int, Form()] = 0,
+    transcode_dir: Annotated[str, Form()] = "",
     probe_live: Annotated[str | None, Form()] = None,
     probe_movies: Annotated[str | None, Form()] = None,
     probe_series: Annotated[str | None, Form()] = None,
-    sr_mode: Annotated[str, Form()] = "off",
 ):
     settings = load_server_settings()
-    settings["transcode_mode"] = mode
-    settings["transcode_hw"] = hw
+    settings["transcode_mode"] = transcode_mode
+    settings["transcode_hw"] = transcode_hw
     settings["max_resolution"] = max_resolution
     settings["quality"] = quality if quality in ("high", "medium", "low") else "high"
     settings["vod_transcode_cache_mins"] = max(0, vod_transcode_cache_mins)
+    settings["live_transcode_cache_secs"] = max(0, live_transcode_cache_secs)
+    settings["live_dvr_mins"] = max(0, live_dvr_mins)
+    if transcode_dir:
+        settings["transcode_dir"] = transcode_dir
+    elif "transcode_dir" in settings:
+        del settings["transcode_dir"]  # Use default
     settings["probe_live"] = probe_live == "on"
     settings["probe_movies"] = probe_movies == "on"
     settings["probe_series"] = probe_series == "on"
-    if sr_mode in ("off", "enhance", "upscale_1080", "upscale_4k"):
-        settings["sr_mode"] = sr_mode
     save_server_settings(settings)
     return {"ok": True}
 
@@ -2360,7 +2666,7 @@ async def get_probe_cache(
 ):
     """Get probe cache stats for settings UI."""
     response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
-    stats = transcoding.get_series_probe_cache_stats()
+    stats = ffmpeg_command.get_series_probe_cache_stats()
     xtream = get_first_xtream_client()
     if not xtream:
         return {"series": stats}
@@ -2371,7 +2677,7 @@ async def get_probe_cache(
 @app.post("/settings/probe-cache/clear")
 async def clear_probe_cache(_user: Annotated[dict, Depends(require_admin)]):
     """Clear all probe caches."""
-    count = transcoding.clear_all_probe_cache()
+    count = ffmpeg_command.clear_all_probe_cache()
     return {"ok": True, "cleared": count}
 
 
@@ -2382,7 +2688,7 @@ async def clear_series_probe_cache(
     episode_id: int | None = None,
 ):
     """Clear probe cache for a specific series or episode."""
-    transcoding.invalidate_series_probe_cache(series_id, episode_id)
+    ffmpeg_command.invalidate_series_probe_cache(series_id, episode_id)
     return {"ok": True}
 
 
@@ -2392,7 +2698,7 @@ async def clear_series_mru(
     _user: Annotated[dict, Depends(require_admin)],
 ):
     """Clear only the MRU for a series, keeping episode cache intact."""
-    transcoding.clear_series_mru(series_id)
+    ffmpeg_command.clear_series_mru(series_id)
     return {"ok": True}
 
 
@@ -2614,7 +2920,12 @@ if __name__ == "__main__":
     parser.add_argument("--key", help="SSL private key file (e.g., privkey.pem)")
     args = parser.parse_args()
 
-    log_level = logging.DEBUG if args.debug else logging.INFO
+    # LOG_LEVEL env var takes precedence, then --debug flag, then default INFO
+    log_level_env = os.environ.get("LOG_LEVEL", "").upper()
+    if log_level_env in ("DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"):
+        log_level = getattr(logging, log_level_env)
+    else:
+        log_level = logging.DEBUG if args.debug else logging.INFO
     logging.basicConfig(
         level=log_level,
         format="%(asctime)s | %(levelname)s | %(message)s",

@@ -255,12 +255,90 @@
     setupSearch('cat-search', 'cat-search-clear', '#filters .cat-chip');
 
     document.getElementById('cat-move-all-right')?.addEventListener('click', async () => {
-      availableContainer.querySelectorAll('.cat-chip').forEach(c => unavailableContainer.appendChild(c));
+      availableContainer.querySelectorAll('.cat-chip:not([style*="display: none"])').forEach(c => unavailableContainer.appendChild(c));
       await save(unavailableContainer);
     });
 
     document.getElementById('cat-move-all-left')?.addEventListener('click', async () => {
-      unavailableContainer.querySelectorAll('.cat-chip').forEach(c => availableContainer.appendChild(c));
+      unavailableContainer.querySelectorAll('.cat-chip:not([style*="display: none"])').forEach(c => availableContainer.appendChild(c));
+      await save(availableContainer);
+    });
+  }
+
+  // ============================================================
+  // VOD Category Filter
+  // ============================================================
+
+  function setupVodCategoryFilter() {
+    const availableContainer = document.getElementById('available-vod-cats');
+    const unavailableContainer = document.getElementById('unavailable-vod-cats');
+    if (!availableContainer || !unavailableContainer) return;
+
+    async function save(container) {
+      const cats = Array.from(availableContainer.querySelectorAll('.vod-cat-chip')).map(el => el.dataset.id);
+      await saveWithFeedback(
+        '/settings/vod-filter',
+        { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cats}) },
+        container
+      );
+    }
+
+    // Initialize order from config
+    const chipById = {};
+    unavailableContainer.querySelectorAll('.vod-cat-chip').forEach(el => chipById[el.dataset.id] = el);
+    (cfg.selectedVodCats || []).forEach(catId => {
+      if (chipById[catId]) availableContainer.appendChild(chipById[catId]);
+    });
+
+    setupDragDrop('#available-vod-cats, #unavailable-vod-cats', '#vod-filters .vod-cat-chip', save);
+    setupSearch('vod-cat-search', 'vod-cat-search-clear', '#vod-filters .vod-cat-chip');
+
+    document.getElementById('vod-cat-move-all-right')?.addEventListener('click', async () => {
+      availableContainer.querySelectorAll('.vod-cat-chip:not([style*="display: none"])').forEach(c => unavailableContainer.appendChild(c));
+      await save(unavailableContainer);
+    });
+
+    document.getElementById('vod-cat-move-all-left')?.addEventListener('click', async () => {
+      unavailableContainer.querySelectorAll('.vod-cat-chip:not([style*="display: none"])').forEach(c => availableContainer.appendChild(c));
+      await save(availableContainer);
+    });
+  }
+
+  // ============================================================
+  // Series Category Filter
+  // ============================================================
+
+  function setupSeriesCategoryFilter() {
+    const availableContainer = document.getElementById('available-series-cats');
+    const unavailableContainer = document.getElementById('unavailable-series-cats');
+    if (!availableContainer || !unavailableContainer) return;
+
+    async function save(container) {
+      const cats = Array.from(availableContainer.querySelectorAll('.series-cat-chip')).map(el => el.dataset.id);
+      await saveWithFeedback(
+        '/settings/series-filter',
+        { method: 'POST', headers: {'Content-Type': 'application/json'}, body: JSON.stringify({cats}) },
+        container
+      );
+    }
+
+    // Initialize order from config
+    const chipById = {};
+    unavailableContainer.querySelectorAll('.series-cat-chip').forEach(el => chipById[el.dataset.id] = el);
+    (cfg.selectedSeriesCats || []).forEach(catId => {
+      if (chipById[catId]) availableContainer.appendChild(chipById[catId]);
+    });
+
+    setupDragDrop('#available-series-cats, #unavailable-series-cats', '#series-filters .series-cat-chip', save);
+    setupSearch('series-cat-search', 'series-cat-search-clear', '#series-filters .series-cat-chip');
+
+    document.getElementById('series-cat-move-all-right')?.addEventListener('click', async () => {
+      availableContainer.querySelectorAll('.series-cat-chip:not([style*="display: none"])').forEach(c => unavailableContainer.appendChild(c));
+      await save(unavailableContainer);
+    });
+
+    document.getElementById('series-cat-move-all-left')?.addEventListener('click', async () => {
+      unavailableContainer.querySelectorAll('.series-cat-chip:not([style*="display: none"])').forEach(c => availableContainer.appendChild(c));
       await save(availableContainer);
     });
   }
@@ -358,25 +436,30 @@
     const container = document.getElementById('transcode-settings');
     if (!container) return;
 
+    // Collect all transcode-related inputs (in container + probe checkboxes + transcode_dir)
+    const transcodeInputs = [
+      ...container.querySelectorAll('.setting-input'),
+      ...document.querySelectorAll('input[name="probe_live"], input[name="probe_movies"], input[name="probe_series"]'),
+      document.querySelector('input[name="transcode_dir"]')
+    ].filter(Boolean);
+
     async function save(triggerEl) {
       const form = new FormData();
-      form.append('mode', container.querySelector('input[name="transcode_mode"]:checked')?.value || 'auto');
-      form.append('hw', container.querySelector('input[name="transcode_hw"]:checked')?.value || 'software');
-      form.append('max_resolution', container.querySelector('input[name="max_resolution"]:checked')?.value || '1080p');
-      form.append('quality', container.querySelector('input[name="quality"]:checked')?.value || 'high');
-      form.append('vod_transcode_cache_mins', container.querySelector('input[name="vod_transcode_cache_mins"]')?.value || '0');
-      if (document.querySelector('input[name="probe_live"]')?.checked) form.append('probe_live', 'on');
-      if (document.querySelector('input[name="probe_movies"]')?.checked) form.append('probe_movies', 'on');
-      if (document.querySelector('input[name="probe_series"]')?.checked) form.append('probe_series', 'on');
+      // Auto-collect all transcode inputs by type
+      transcodeInputs.forEach(el => {
+        if (!el.name) return;
+        if (el.type === 'checkbox') {
+          if (el.checked) form.append(el.name, 'on');
+        } else if (el.type === 'radio') {
+          if (el.checked) form.append(el.name, el.value);
+        } else {
+          form.append(el.name, el.value);
+        }
+      });
       await saveWithFeedback('/settings/transcode', { method: 'POST', body: form }, getFeedbackEl(triggerEl));
     }
 
-    container.querySelectorAll('.setting-input').forEach(el => {
-      el.addEventListener('change', function() { save(this); });
-    });
-
-    // Probe checkboxes (in probe-cache section)
-    document.querySelectorAll('input[name="probe_live"], input[name="probe_movies"], input[name="probe_series"]').forEach(el => {
+    transcodeInputs.forEach(el => {
       el.addEventListener('change', function() { save(this); });
     });
 
@@ -390,12 +473,22 @@
           const resp = await fetch('/settings/refresh-encoders', { method: 'POST' });
           if (resp.ok) {
             const { encoders = {} } = await resp.json();
-            ['nvidia', 'intel', 'vaapi', 'software'].forEach(hw => {
-              const radio = container.querySelector(`input[name="transcode_hw"][value="${hw}"]`);
+            // Map encoder detection to radio button enable/disable states
+            const radioStates = {
+              'nvenc+vaapi': encoders.nvenc && encoders.vaapi,
+              'nvenc+software': encoders.nvenc,
+              'amf+vaapi': encoders.amf && encoders.vaapi,
+              'amf+software': encoders.amf,
+              'qsv': encoders.qsv,
+              'vaapi': encoders.vaapi,
+              'software': true,  // Always available
+            };
+            Object.entries(radioStates).forEach(([value, enabled]) => {
+              const radio = container.querySelector(`input[name="transcode_hw"][value="${value}"]`);
               const label = radio?.closest('label');
               if (radio && label) {
-                radio.disabled = !encoders[hw];
-                label.classList.toggle('opacity-40', !encoders[hw]);
+                radio.disabled = !enabled;
+                label.classList.toggle('opacity-40', !enabled);
               }
             });
             refreshBtn.textContent = 'Done!';
@@ -611,13 +704,13 @@
       document.getElementById('add-user-block-all')?.addEventListener('click', () => {
         const avail = document.getElementById('add-user-available-groups');
         const unavail = document.getElementById('add-user-unavailable-groups');
-        avail?.querySelectorAll('.add-user-group-chip').forEach(c => unavail?.appendChild(c));
+        avail?.querySelectorAll('.add-user-group-chip:not([style*="display: none"])').forEach(c => unavail?.appendChild(c));
       });
 
       document.getElementById('add-user-allow-all')?.addEventListener('click', () => {
         const avail = document.getElementById('add-user-available-groups');
         const unavail = document.getElementById('add-user-unavailable-groups');
-        unavail?.querySelectorAll('.add-user-group-chip').forEach(c => avail?.appendChild(c));
+        unavail?.querySelectorAll('.add-user-group-chip:not([style*="display: none"])').forEach(c => avail?.appendChild(c));
       });
 
       addUserForm.addEventListener('submit', async function(e) {
@@ -754,7 +847,7 @@
         if (!username) return;
         const avail = document.querySelector(`.user-available-groups[data-username="${username}"]`);
         const unavail = document.querySelector(`.user-unavailable-groups[data-username="${username}"]`);
-        avail?.querySelectorAll('.group-chip').forEach(c => unavail?.appendChild(c));
+        avail?.querySelectorAll('.group-chip:not([style*="display: none"])').forEach(c => unavail?.appendChild(c));
         await saveGroups(username, unavail);
       });
     });
@@ -765,7 +858,7 @@
         if (!username) return;
         const avail = document.querySelector(`.user-available-groups[data-username="${username}"]`);
         const unavail = document.querySelector(`.user-unavailable-groups[data-username="${username}"]`);
-        unavail?.querySelectorAll('.group-chip').forEach(c => avail?.appendChild(c));
+        unavail?.querySelectorAll('.group-chip:not([style*="display: none"])').forEach(c => avail?.appendChild(c));
         await saveGroups(username, avail);
       });
     });
@@ -779,6 +872,8 @@
     setupSourceTypeSelect();
     setupSourceEditForms();
     setupCategoryFilter();
+    setupVodCategoryFilter();
+    setupSeriesCategoryFilter();
     setupChromeCcLink();
     setupCaptionSettings();
     setupTranscodeSettings();

@@ -6,22 +6,127 @@ from collections.abc import Callable
 from dataclasses import dataclass, field
 from typing import Any
 
+import hashlib
 import json
 import logging
 import pathlib
 import subprocess
 import threading
 import time
+import urllib.parse
 
 
 log = logging.getLogger(__name__)
 
+
+# ===========================================================================
+# VAAPI Auto-Detection
+# ===========================================================================
+
+
+def _detect_vaapi_device() -> str | None:
+    """Auto-detect the VAAPI render device (Intel or AMD GPU).
+
+    Returns render device path like '/dev/dri/renderD128' or None if not found.
+    """
+    by_path = pathlib.Path("/dev/dri/by-path")
+    if not by_path.exists():
+        return None
+
+    # Map PCI addresses to render devices
+    pci_to_render: dict[str, str] = {}
+    for link in by_path.iterdir():
+        if "-render" in link.name:
+            # Extract PCI address from name like "pci-0000:00:02.0-render"
+            pci_addr = link.name.replace("pci-", "").replace("-render", "")
+            render_dev = f"/dev/dri/{link.resolve().name}"
+            pci_to_render[pci_addr] = render_dev
+
+    if not pci_to_render:
+        return None
+
+    # Find Intel (8086) or AMD (1002) GPU via lspci
+    try:
+        result = subprocess.run(
+            ["lspci", "-nn"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            # Look for VGA/Display controllers with Intel or AMD vendor ID
+            if "VGA" in line or "Display" in line or "3D" in line:
+                # Extract PCI address (first field, e.g., "00:02.0")
+                pci_addr = "0000:" + line.split()[0]
+                # Check vendor ID in brackets like [8086:0402] or [1002:...]
+                if ("[8086:" in line or "[1002:" in line) and pci_addr in pci_to_render:
+                    return pci_to_render[pci_addr]
+    except Exception:
+        pass
+
+    # Fallback: return first render device (usually works for single-GPU systems)
+    return "/dev/dri/renderD128" if pathlib.Path("/dev/dri/renderD128").exists() else None
+
+
+def _detect_libva_driver() -> str | None:
+    """Auto-detect the appropriate LIBVA driver name.
+
+    Returns 'i965', 'iHD', or 'radeonsi' based on detected GPU, or None.
+    """
+    try:
+        result = subprocess.run(
+            ["lspci", "-nn"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+        for line in result.stdout.splitlines():
+            if "VGA" in line or "Display" in line:
+                if "[8086:" in line:
+                    # Intel GPU - check generation for i965 vs iHD
+                    # Gen 8+ (Broadwell and newer) can use iHD, older use i965
+                    # For simplicity, try i965 first (works on more systems)
+                    return "i965"
+                if "[1002:" in line:
+                    # AMD GPU
+                    return "radeonsi"
+    except Exception:
+        pass
+    return None
+
+
+def _detect_dri_path() -> str | None:
+    """Auto-detect the system DRI drivers path.
+
+    Returns path like '/usr/lib/x86_64-linux-gnu/dri' or None.
+    """
+    # Check common locations in order of preference
+    candidates = [
+        "/usr/lib/x86_64-linux-gnu/dri",  # Debian/Ubuntu
+        "/usr/lib64/dri",  # Fedora/RHEL
+        "/usr/lib/dri",  # Arch
+    ]
+    for path in candidates:
+        if pathlib.Path(path).is_dir():
+            return path
+    return None
+
+
+# Cached detection results (computed once at import)
+VAAPI_DEVICE = _detect_vaapi_device()
+LIBVA_DRIVER = _detect_libva_driver()
+DRI_PATH = _detect_dri_path()
+
 APP_DIR = pathlib.Path(__file__).parent
-CACHE_DIR = APP_DIR / "cache"
+# Use old "cache" if it exists (backwards compat), otherwise ".cache"
+_OLD_CACHE = APP_DIR / "cache"
+CACHE_DIR = _OLD_CACHE if _OLD_CACHE.exists() else APP_DIR / ".cache"
 CACHE_DIR.mkdir(exist_ok=True)
 SERVER_SETTINGS_FILE = CACHE_DIR / "server_settings.json"
 USERS_DIR = CACHE_DIR / "users"
 USERS_DIR.mkdir(exist_ok=True)
+LOGOS_DIR = CACHE_DIR / "logos"
+LOGOS_DIR.mkdir(exist_ok=True)
 
 # Cache TTLs in seconds
 LIVE_CACHE_TTL = 2 * 3600  # 2 hours
@@ -30,6 +135,9 @@ VOD_CACHE_TTL = 12 * 3600  # 12 hours
 SERIES_CACHE_TTL = 12 * 3600  # 12 hours
 INFO_CACHE_TTL = 7 * 24 * 3600  # 7 days max for series/movie info
 INFO_CACHE_STALE = 24 * 3600  # Refresh in background after 24 hours
+LOGO_CACHE_TTL = 7 * 24 * 3600  # 7 days for logos (server-side)
+LOGO_BROWSER_TTL = 24 * 3600  # 1 day for browser cache (re-validates before server expires)
+LOGO_MAX_SIZE = 1024 * 1024  # 1MB max logo size
 
 # In-memory cache
 _cache: dict[str, Any] = {}
@@ -108,6 +216,74 @@ def get_cache_lock() -> threading.Lock:
     return _cache_lock
 
 
+def _sanitize_name(name: str) -> str:
+    """Sanitize a name for use as a directory/file name."""
+    # Remove path traversal and special chars
+    name = name.replace("..", "").replace("/", "_").replace("\\", "_")
+    name = "".join(c for c in name if c.isalnum() or c in "-_ ")
+    return name[:224] or "default"
+
+
+def _url_to_filename(url: str) -> str:
+    """Derive a readable filename from URL with hash suffix to avoid collisions."""
+    # Always include hash suffix to avoid collisions
+    url_hash = hashlib.md5(url.encode()).hexdigest()[:8]
+    parsed = urllib.parse.urlparse(url)
+    path = parsed.path.rstrip("/")
+    if path:
+        # Get last path component
+        name = path.split("/")[-1]
+        # Strip extension, we'll add our own
+        if "." in name:
+            name = name.rsplit(".", 1)[0]
+        name = _sanitize_name(name)
+        if name and len(name) >= 2:
+            return f"{name}_{url_hash}"
+    return url_hash
+
+
+def get_cached_logo(source_name: str, url: str) -> pathlib.Path | None:
+    """Get cached logo path if valid and not expired. Returns None if not cached."""
+    safe_source = _sanitize_name(source_name)
+    filename = _url_to_filename(url)
+    source_dir = LOGOS_DIR / safe_source
+    if not source_dir.exists():
+        return None
+    # Look for file with any extension
+    for ext in ("png", "jpg", "jpeg", "gif", "webp", "svg"):
+        path = source_dir / f"{filename}.{ext}"
+        if path.exists():
+            age = time.time() - path.stat().st_mtime
+            if age < LOGO_CACHE_TTL:
+                return path
+            # Expired, delete it
+            path.unlink(missing_ok=True)
+    return None
+
+
+def save_logo(source_name: str, url: str, data: bytes, content_type: str) -> pathlib.Path:
+    """Save logo to cache. Returns the saved path."""
+    safe_source = _sanitize_name(source_name)
+    filename = _url_to_filename(url)
+    source_dir = LOGOS_DIR / safe_source
+    source_dir.mkdir(parents=True, exist_ok=True)
+    # Determine extension from content-type
+    ext_map = {
+        "image/png": "png",
+        "image/jpeg": "jpg",
+        "image/gif": "gif",
+        "image/webp": "webp",
+        "image/svg+xml": "svg",
+    }
+    ext = ext_map.get(content_type.split(";")[0].strip(), "png")
+    path = source_dir / f"{filename}.{ext}"
+    # Atomic write: write to temp file then rename
+    tmp = path.with_suffix(".tmp")
+    tmp.write_bytes(data)
+    tmp.rename(path)
+    return path
+
+
 def get_cached_info(cache_key: str, fetch_fn: Callable[[], Any], force: bool = False) -> Any:
     """Get info from memory cache, file cache, or fetch. Stale-while-revalidate."""
     cached = load_file_cache(cache_key)
@@ -155,10 +331,16 @@ def get_cached_info(cache_key: str, fetch_fn: Callable[[], Any], force: bool = F
     return data
 
 
-def _test_encoder(cmd: list[str], timeout: int = 5) -> tuple[bool, str]:
+def _test_encoder(cmd: list[str], timeout: int = 5, env: dict | None = None) -> tuple[bool, str]:
     """Test if an encoder works. Returns (success, error_message)."""
     try:
-        result = subprocess.run(cmd, capture_output=True, timeout=timeout)
+        run_env = None
+        if env:
+            import os
+
+            run_env = os.environ.copy()
+            run_env.update(env)
+        result = subprocess.run(cmd, capture_output=True, timeout=timeout, env=run_env)
         if result.returncode == 0:
             return True, ""
         stderr = result.stderr.decode(errors="replace").strip()
@@ -179,10 +361,10 @@ def detect_encoders() -> dict[str, bool]:
     """Detect available FFmpeg H.264 encoders by testing actual hardware."""
     log.info("Detecting hardware encoders...")
     encoders = {
-        "nvidia": False,
-        "radeon": False,
-        "integrated": False,
-        "software": False,
+        "nvenc": False,
+        "amf": False,
+        "qsv": False,
+        "vaapi": False,
     }
 
     # Test input: 1 frame of 64x64 black
@@ -190,45 +372,59 @@ def detect_encoders() -> dict[str, bool]:
     base_cmd = ["ffmpeg", "-hide_banner", "-loglevel", "error", "-y"]
     null_out = ["-f", "null", "-"]
 
-    # NVIDIA: try nvenc directly
+    # NVENC: try nvenc directly
     ok, err = _test_encoder(base_cmd + test_input + ["-c:v", "h264_nvenc"] + null_out)
-    encoders["nvidia"] = ok
+    encoders["nvenc"] = ok
     if ok:
-        log.info("  NVIDIA (h264_nvenc): available")
+        log.info("  NVENC (h264_nvenc): available")
     else:
-        log.info("  NVIDIA (h264_nvenc): unavailable - %s", err)
+        log.info("  NVENC (h264_nvenc): unavailable - %s", err)
 
-    # Radeon: AMD discrete GPU via AMF encoder
+    # AMF: try amf directly
     ok, err = _test_encoder(base_cmd + test_input + ["-c:v", "h264_amf"] + null_out)
-    encoders["radeon"] = ok
+    encoders["amf"] = ok
     if ok:
-        log.info("  Radeon (h264_amf): available")
+        log.info("  AMF (h264_amf): available")
     else:
-        log.info("  Radeon (h264_amf): unavailable - %s", err)
+        log.info("  AMF (h264_amf): unavailable - %s", err)
 
-    # Integrated: Intel/AMD integrated GPU via VA-API
+    # QSV: needs hwaccel init
     ok, err = _test_encoder(
         base_cmd
-        + ["-vaapi_device", "/dev/dri/renderD128"]
+        + ["-hwaccel", "qsv", "-hwaccel_output_format", "qsv"]
         + test_input
-        + ["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi"]
+        + ["-c:v", "h264_qsv"]
         + null_out
     )
-    encoders["integrated"] = ok
+    encoders["qsv"] = ok
     if ok:
-        log.info("  Integrated (h264_vaapi): available")
+        log.info("  QSV (h264_qsv): available")
     else:
-        log.info("  Integrated (h264_vaapi): unavailable - %s", err)
+        log.info("  QSV (h264_qsv): unavailable - %s", err)
 
-    # Software: libx264
-    ok, err = _test_encoder(
-        base_cmd + test_input + ["-c:v", "libx264", "-preset", "ultrafast"] + null_out
-    )
-    encoders["software"] = ok
-    if ok:
-        log.info("  Software (libx264): available")
+    # VA-API: needs device, hwupload, and driver env vars for hybrid GPU systems
+    if VAAPI_DEVICE and LIBVA_DRIVER and DRI_PATH:
+        vaapi_env = {
+            "LIBVA_DRIVER_NAME": LIBVA_DRIVER,
+            "LIBVA_DRIVERS_PATH": DRI_PATH,
+        }
+        ok, err = _test_encoder(
+            base_cmd
+            + ["-init_hw_device", f"vaapi=va:{VAAPI_DEVICE}"]
+            + test_input
+            + ["-vf", "format=nv12,hwupload", "-c:v", "h264_vaapi"]
+            + null_out,
+            env=vaapi_env,
+        )
+        encoders["vaapi"] = ok
+        if ok:
+            log.info(
+                "  VAAPI (h264_vaapi): available (device=%s, driver=%s)", VAAPI_DEVICE, LIBVA_DRIVER
+            )
+        else:
+            log.info("  VAAPI (h264_vaapi): unavailable - %s", err)
     else:
-        log.info("  Software (libx264): unavailable - %s", err)
+        log.info("  VAAPI (h264_vaapi): unavailable - no Intel/AMD GPU detected")
 
     return encoders
 
@@ -244,10 +440,19 @@ def refresh_encoders() -> dict[str, bool]:
 
 
 def _default_encoder() -> str:
-    """Return first available encoder, preferring discrete GPUs."""
-    for enc in ("nvidia", "radeon", "integrated", "software"):
-        if AVAILABLE_ENCODERS.get(enc):
-            return enc
+    """Return first available encoder option.
+
+    Preference order: nvenc > amf > qsv > vaapi > software
+    For nvenc/amf, prefer +vaapi fallback if VAAPI is available.
+    """
+    if AVAILABLE_ENCODERS.get("nvenc"):
+        return "nvenc+vaapi" if AVAILABLE_ENCODERS.get("vaapi") else "nvenc+software"
+    if AVAILABLE_ENCODERS.get("amf"):
+        return "amf+vaapi" if AVAILABLE_ENCODERS.get("vaapi") else "amf+software"
+    if AVAILABLE_ENCODERS.get("qsv"):
+        return "qsv"
+    if AVAILABLE_ENCODERS.get("vaapi"):
+        return "vaapi"
     return "software"
 
 
@@ -274,8 +479,23 @@ def load_server_settings() -> dict[str, Any]:
     else:
         data = {}
     data.setdefault("transcode_mode", "auto")
+
+    # Migrate old transcode_hw values to new format
+    old_hw = data.get("transcode_hw", "")
+    if old_hw == "nvidia":
+        data["transcode_hw"] = (
+            "nvenc+vaapi" if AVAILABLE_ENCODERS.get("vaapi") else "nvenc+software"
+        )
+    elif old_hw == "intel":
+        data["transcode_hw"] = "qsv"
+    # "vaapi" and "software" remain unchanged
+
     data.setdefault("transcode_hw", _default_encoder())
     data.setdefault("vod_transcode_cache_mins", 60)
+    # 0 = no caching (dead sessions cleaned immediately)
+    data.setdefault("live_transcode_cache_secs", 0)
+    data.setdefault("live_dvr_mins", 0)  # 0 = disabled (default 30 sec buffer)
+    data.setdefault("transcode_dir", "")  # Empty = system temp dir
     data.setdefault("probe_live", True)
     data.setdefault("probe_movies", True)
     data.setdefault("probe_series", False)

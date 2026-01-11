@@ -41,9 +41,82 @@
         <div class="text-xs text-gray-400 mb-1">Unavailable</div>
         <div id="unavailable-cats" class="h-96 overflow-auto space-y-1 bg-gray-700 rounded p-2 border-2 border-dashed border-gray-600">
           {% for cat in live_categories %}
+          {% set src_name = source_names.get(cat.source_id, '') %}
           <div class="cat-chip px-2 py-1 bg-gray-600 rounded text-xs cursor-move truncate hover:bg-gray-500"
-               draggable="true" data-id="{{ cat.category_id }}" title="{{ cat.category_name }}">
-            {{ cat.category_name }}
+               draggable="true" data-id="{{ cat.category_id }}" title="{% if src_name %}[{{ src_name }}] {% endif %}{{ cat.category_name }}">
+            {% if src_name %}<span class="text-gray-400">[{{ src_name }}]</span> {% endif %}{{ cat.category_name }}
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Movies Category Filter -->
+  <div id="vod-filters" class="mb-8 p-4 bg-gray-800 rounded">
+    <h3 class="text-xl font-semibold mb-4">Movies Filter</h3>
+    <p class="text-sm text-gray-400 mb-3">Select which movie categories appear on the Movies page</p>
+    <div class="grid grid-cols-2 gap-2 mb-2">
+      <div class="relative">
+        <input type="text" id="vod-cat-search" placeholder="Filter categories..."
+               class="w-full px-3 py-1 pr-7 bg-gray-700 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+        <button type="button" id="vod-cat-search-clear" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-sm px-1 hidden">✕</button>
+      </div>
+      <div class="flex gap-2">
+        <button type="button" id="vod-cat-move-all-right" class="px-2 py-0.5 text-xs bg-gray-600 hover:bg-gray-500 rounded">Block All</button>
+        <button type="button" id="vod-cat-move-all-left" class="px-2 py-0.5 text-xs bg-gray-600 hover:bg-gray-500 rounded">Allow All</button>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <div>
+        <div class="text-xs text-gray-400 mb-1">Available</div>
+        <div id="available-vod-cats" class="h-96 overflow-auto space-y-1 bg-gray-700 rounded p-2 border-2 border-dashed border-gray-600">
+        </div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 mb-1">Unavailable</div>
+        <div id="unavailable-vod-cats" class="h-96 overflow-auto space-y-1 bg-gray-700 rounded p-2 border-2 border-dashed border-gray-600">
+          {% for cat in vod_categories %}
+          {% set src_name = source_names.get(cat.source_id, '') %}
+          <div class="vod-cat-chip px-2 py-1 bg-gray-600 rounded text-xs cursor-move truncate hover:bg-gray-500"
+               draggable="true" data-id="{{ cat.category_id }}" title="{% if src_name %}[{{ src_name }}] {% endif %}{{ cat.category_name }}">
+            {% if src_name %}<span class="text-gray-400">[{{ src_name }}]</span> {% endif %}{{ cat.category_name }}
+          </div>
+          {% endfor %}
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Series Category Filter -->
+  <div id="series-filters" class="mb-8 p-4 bg-gray-800 rounded">
+    <h3 class="text-xl font-semibold mb-4">Series Filter</h3>
+    <p class="text-sm text-gray-400 mb-3">Select which series categories appear on the Series page</p>
+    <div class="grid grid-cols-2 gap-2 mb-2">
+      <div class="relative">
+        <input type="text" id="series-cat-search" placeholder="Filter categories..."
+               class="w-full px-3 py-1 pr-7 bg-gray-700 rounded text-xs focus:outline-none focus:ring-1 focus:ring-blue-500">
+        <button type="button" id="series-cat-search-clear" class="absolute right-2 top-1/2 -translate-y-1/2 text-gray-400 hover:text-white text-sm px-1 hidden">✕</button>
+      </div>
+      <div class="flex gap-2">
+        <button type="button" id="series-cat-move-all-right" class="px-2 py-0.5 text-xs bg-gray-600 hover:bg-gray-500 rounded">Block All</button>
+        <button type="button" id="series-cat-move-all-left" class="px-2 py-0.5 text-xs bg-gray-600 hover:bg-gray-500 rounded">Allow All</button>
+      </div>
+    </div>
+    <div class="grid grid-cols-2 gap-2">
+      <div>
+        <div class="text-xs text-gray-400 mb-1">Available</div>
+        <div id="available-series-cats" class="h-96 overflow-auto space-y-1 bg-gray-700 rounded p-2 border-2 border-dashed border-gray-600">
+        </div>
+      </div>
+      <div>
+        <div class="text-xs text-gray-400 mb-1">Unavailable</div>
+        <div id="unavailable-series-cats" class="h-96 overflow-auto space-y-1 bg-gray-700 rounded p-2 border-2 border-dashed border-gray-600">
+          {% for cat in series_categories %}
+          {% set src_name = source_names.get(cat.source_id, '') %}
+          <div class="series-cat-chip px-2 py-1 bg-gray-600 rounded text-xs cursor-move truncate hover:bg-gray-500"
+               draggable="true" data-id="{{ cat.category_id }}" title="{% if src_name %}[{{ src_name }}] {% endif %}{{ cat.category_name }}">
+            {% if src_name %}<span class="text-gray-400">[{{ src_name }}]</span> {% endif %}{{ cat.category_name }}
           </div>
           {% endfor %}
         </div>
@@ -366,33 +439,59 @@
       </div>
       <div>
         <label class="block text-sm font-medium mb-2">Hardware Acceleration</label>
-        <div class="flex gap-4 flex-wrap">
-          <label class="flex items-center gap-2 text-sm {% if not available_encoders.nvidia %}opacity-40{% endif %}">
-            <input type="radio" name="transcode_hw" value="nvidia" {% if transcode_hw == 'nvidia' %}checked{% endif %}
-                   {% if not available_encoders.nvidia %}disabled{% endif %}
-                   class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
-            <span>NVIDIA</span>
-          </label>
-          <label class="flex items-center gap-2 text-sm {% if not available_encoders.radeon %}opacity-40{% endif %}">
-            <input type="radio" name="transcode_hw" value="radeon" {% if transcode_hw == 'radeon' %}checked{% endif %}
-                   {% if not available_encoders.radeon %}disabled{% endif %}
-                   class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
-            <span>Radeon</span>
-          </label>
-          <label class="flex items-center gap-2 text-sm {% if not available_encoders.integrated %}opacity-40{% endif %}">
-            <input type="radio" name="transcode_hw" value="integrated" {% if transcode_hw == 'integrated' %}checked{% endif %}
-                   {% if not available_encoders.integrated %}disabled{% endif %}
-                   class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
-            <span>Integrated</span>
-          </label>
-          <label class="flex items-center gap-2 text-sm {% if not available_encoders.software %}opacity-40{% endif %}">
-            <input type="radio" name="transcode_hw" value="software" {% if transcode_hw == 'software' %}checked{% endif %}
-                   {% if not available_encoders.software %}disabled{% endif %}
-                   class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
-            <span>Software</span>
-          </label>
+        <div class="flex flex-col gap-2">
+          <!-- NVENC options -->
+          <div class="flex gap-4">
+            <label class="flex items-center gap-2 text-sm {% if not available_encoders.nvenc or not available_encoders.vaapi %}opacity-40{% endif %}">
+              <input type="radio" name="transcode_hw" value="nvenc+vaapi" {% if transcode_hw == 'nvenc+vaapi' %}checked{% endif %}
+                     {% if not available_encoders.nvenc or not available_encoders.vaapi %}disabled{% endif %}
+                     class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+              <span>NVENC + VAAPI</span>
+            </label>
+            <label class="flex items-center gap-2 text-sm {% if not available_encoders.nvenc %}opacity-40{% endif %}">
+              <input type="radio" name="transcode_hw" value="nvenc+software" {% if transcode_hw == 'nvenc+software' %}checked{% endif %}
+                     {% if not available_encoders.nvenc %}disabled{% endif %}
+                     class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+              <span>NVENC + Software</span>
+            </label>
+          </div>
+          <!-- AMF options -->
+          <div class="flex gap-4">
+            <label class="flex items-center gap-2 text-sm {% if not available_encoders.amf or not available_encoders.vaapi %}opacity-40{% endif %}">
+              <input type="radio" name="transcode_hw" value="amf+vaapi" {% if transcode_hw == 'amf+vaapi' %}checked{% endif %}
+                     {% if not available_encoders.amf or not available_encoders.vaapi %}disabled{% endif %}
+                     class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+              <span>AMF + VAAPI</span>
+            </label>
+            <label class="flex items-center gap-2 text-sm {% if not available_encoders.amf %}opacity-40{% endif %}">
+              <input type="radio" name="transcode_hw" value="amf+software" {% if transcode_hw == 'amf+software' %}checked{% endif %}
+                     {% if not available_encoders.amf %}disabled{% endif %}
+                     class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+              <span>AMF + Software</span>
+            </label>
+          </div>
+          <!-- Standalone options -->
+          <div class="flex gap-4">
+            <label class="flex items-center gap-2 text-sm {% if not available_encoders.qsv %}opacity-40{% endif %}">
+              <input type="radio" name="transcode_hw" value="qsv" {% if transcode_hw == 'qsv' %}checked{% endif %}
+                     {% if not available_encoders.qsv %}disabled{% endif %}
+                     class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+              <span>QSV (Intel)</span>
+            </label>
+            <label class="flex items-center gap-2 text-sm {% if not available_encoders.vaapi %}opacity-40{% endif %}">
+              <input type="radio" name="transcode_hw" value="vaapi" {% if transcode_hw == 'vaapi' %}checked{% endif %}
+                     {% if not available_encoders.vaapi %}disabled{% endif %}
+                     class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+              <span>VAAPI</span>
+            </label>
+            <label class="flex items-center gap-2 text-sm">
+              <input type="radio" name="transcode_hw" value="software" {% if transcode_hw == 'software' %}checked{% endif %}
+                     class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+              <span>Software</span>
+            </label>
+          </div>
         </div>
-        <p class="text-xs text-gray-400 mt-1">Choose the most specific option available for your hardware</p>
+        <p class="text-xs text-gray-400 mt-1">NVENC/AMF encode on GPU; +VAAPI uses GPU decode, +Software uses CPU decode</p>
         <button type="button" id="refresh-encoders-btn"
                 class="mt-2 px-3 py-1 text-xs bg-gray-700 hover:bg-gray-600 rounded">
           Re-detect Hardware
@@ -452,34 +551,20 @@
                class="setting-input w-32 px-3 py-2 bg-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
         <p class="text-xs text-gray-400 mt-1">Keep transcoded VOD for reuse (0 = disabled)</p>
       </div>
-      {% if sr_available %}
       <div>
-        <label class="block text-sm font-medium mb-2">Super Resolution (VOD only)</label>
-        <div class="flex gap-4 flex-wrap">
-          <label class="flex items-center gap-2 text-sm">
-            <input type="radio" name="sr_mode" value="off" {% if sr_mode == 'off' or not sr_mode %}checked{% endif %}
-                   class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
-            <span>Off</span>
-          </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="radio" name="sr_mode" value="enhance" {% if sr_mode == 'enhance' %}checked{% endif %}
-                   class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
-            <span>Enhance (1080p→1080p)</span>
-          </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="radio" name="sr_mode" value="upscale_1080" {% if sr_mode == 'upscale_1080' %}checked{% endif %}
-                   class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
-            <span>Upscale to 1080p</span>
-          </label>
-          <label class="flex items-center gap-2 text-sm">
-            <input type="radio" name="sr_mode" value="upscale_4k" {% if sr_mode == 'upscale_4k' %}checked{% endif %}
-                   class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
-            <span>Upscale to 4K</span>
-          </label>
-        </div>
-        <p class="text-xs text-gray-400 mt-1">AI upscaling via Real-ESRGAN. Very slow - results are cached.</p>
+        <label class="block text-sm font-medium mb-2">Live Session Timeout (seconds)</label>
+        <input type="number" name="live_transcode_cache_secs" value="{{ live_transcode_cache_secs }}"
+               min="0" max="300" step="5"
+               class="setting-input w-32 px-3 py-2 bg-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
+        <p class="text-xs text-gray-400 mt-1">Keep dead session for reconnect (0 = immediate cleanup)</p>
       </div>
-      {% endif %}
+      <div>
+        <label class="block text-sm font-medium mb-2">Live DVR Buffer (minutes)</label>
+        <input type="number" name="live_dvr_mins" value="{{ live_dvr_mins }}"
+               min="0" max="120" step="5"
+               class="setting-input w-32 px-3 py-2 bg-gray-700 rounded focus:outline-none focus:ring-2 focus:ring-blue-500 text-sm">
+        <p class="text-xs text-gray-400 mt-1">Allow seeking back in live streams (0 = disabled, ~30s buffer)</p>
+      </div>
     </div>
   </div>
 
@@ -530,6 +615,13 @@
   <!-- Data Cache -->
   <div id="data-cache" class="mb-8 p-4 bg-gray-800 rounded">
     <h3 class="text-xl font-semibold mb-4">Data Cache</h3>
+    <div class="mb-4">
+      <label class="block text-sm font-medium mb-2">Transcode Directory</label>
+      <input type="text" name="transcode_dir" value="{{ transcode_dir }}"
+             placeholder="(system temp directory)"
+             class="setting-input w-full p-2 bg-gray-700 border border-gray-600 rounded focus:border-blue-500 focus:outline-none font-mono text-sm">
+      <p class="text-xs text-gray-400 mt-1">Directory for HLS segments. Empty = system temp. Use a fast SSD for best performance.</p>
+    </div>
     <p class="text-sm text-gray-400 mb-4">Clear cached channel lists, movies, and series data. Use this after changing source settings or if content access isn't working correctly.</p>
     <div class="flex justify-end">
       <button id="clear-data-cache" class="px-3 py-1.5 text-sm bg-red-600 hover:bg-red-700 rounded">Delete</button>
@@ -805,8 +897,18 @@
 window.SETTINGS_CONFIG = {
   currentUser: {{ current_user | tojson }},
   selectedCats: {{ selected_cats | tojson }},
+  selectedVodCats: {{ selected_vod_cats | tojson }},
+  selectedSeriesCats: {{ selected_series_cats | tojson }},
   catNames: {
     {% for cat in live_categories %}{{ cat.category_id | tojson }}: {{ cat.category_name | tojson }}{% if not loop.last %},{% endif %}
+    {% endfor %}
+  },
+  vodCatNames: {
+    {% for cat in vod_categories %}{{ cat.category_id | tojson }}: {{ cat.category_name | tojson }}{% if not loop.last %},{% endif %}
+    {% endfor %}
+  },
+  seriesCatNames: {
+    {% for cat in series_categories %}{{ cat.category_id | tojson }}: {{ cat.category_name | tojson }}{% if not loop.last %},{% endif %}
     {% endfor %}
   },
   ccStyle: {{ cc_style | tojson }},
