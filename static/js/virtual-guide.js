@@ -2,15 +2,32 @@
  * Virtual scrolling for the TV guide.
  * Only renders rows that are visible (plus buffer), fetches more as needed.
  */
+
+// Configuration constants
+const VIRTUAL_GUIDE_DEFAULTS = {
+  ROW_HEIGHT_DESKTOP: 64,       // 4rem in pixels
+  ROW_HEIGHT_MOBILE: 40,        // 2.5rem in pixels
+  BUFFER_SIZE: 50,              // Rows to load above/below viewport
+  MAX_CACHE_SIZE: 500,          // Evict cache beyond this
+  MAX_RETRIES: 3,               // Retry failed fetches this many times
+  MOBILE_BREAKPOINT: 512,       // Width below which is considered mobile
+  SCROLL_DIRECTION_THRESHOLD: 5, // Min scroll delta to register direction
+  RENDER_DEBOUNCE_MS: 16,       // ~60fps for smooth visual update
+  FETCH_DEBOUNCE_MS: 150,       // Wait for scroll to settle before fetching
+  RESIZE_DEBOUNCE_MS: 100,      // Debounce window resize handler
+};
+
 class VirtualGuide {
   constructor(options) {
+    const D = VIRTUAL_GUIDE_DEFAULTS;
+
     this.container = options.container;
-    this.rowHeight = options.rowHeight || 64; // 4rem = 64px desktop
-    this.rowHeightMobile = options.rowHeightMobile || 40; // 2.5rem mobile
+    this.rowHeight = options.rowHeight || D.ROW_HEIGHT_DESKTOP;
+    this.rowHeightMobile = options.rowHeightMobile || D.ROW_HEIGHT_MOBILE;
     this.totalRows = options.totalRows;
-    this.bufferSize = options.bufferSize || 50;
-    this.maxCacheSize = options.maxCacheSize || 500; // Evict beyond this
-    this.initialRows = options.initialRows || []; // SSR rows
+    this.bufferSize = options.bufferSize || D.BUFFER_SIZE;
+    this.maxCacheSize = options.maxCacheSize || D.MAX_CACHE_SIZE;
+    this.initialRows = options.initialRows || [];
     this.offset = options.offset || 0;
     this.cats = options.cats || '';
     this.logoUrlFilter = options.logoUrlFilter || (url => url);
@@ -18,7 +35,7 @@ class VirtualGuide {
     // State
     this.cache = new Map(); // row index -> row data
     this.failedRanges = new Map(); // range key -> retry count
-    this.maxRetries = 3;
+    this.maxRetries = D.MAX_RETRIES;
     this.needsRecheck = false;
     this.renderedRange = { start: 0, end: 0 };
     this.pendingFetch = null;
@@ -26,7 +43,8 @@ class VirtualGuide {
     this.scrollDebounce = null;
     this.fetchDebounce = null;
     this.renderDebounce = null;
-    this.isMobile = window.innerWidth < 512;
+    this.recheckTimeout = null;
+    this.isMobile = window.innerWidth < D.MOBILE_BREAKPOINT;
     this.lastScrollTop = 0;
     this.scrollDirection = 'down';
 
@@ -139,22 +157,25 @@ class VirtualGuide {
     }, { passive: true });
 
     // Handle resize
+    const D = VIRTUAL_GUIDE_DEFAULTS;
     let resizeTimer;
     window.addEventListener('resize', () => {
       clearTimeout(resizeTimer);
       resizeTimer = setTimeout(() => {
         const wasMobile = this.isMobile;
-        this.isMobile = window.innerWidth < 512;
+        this.isMobile = window.innerWidth < D.MOBILE_BREAKPOINT;
         if (wasMobile !== this.isMobile) {
           // Row height changed, update spacer
           this.spacer.style.height = `${this.totalRows * this.currentRowHeight}px`;
           this.updateVisibleRange();
         }
-      }, 100);
+      }, D.RESIZE_DEBOUNCE_MS);
     });
   }
 
   onScroll() {
+    const D = VIRTUAL_GUIDE_DEFAULTS;
+
     // Clear any pending debounce
     clearTimeout(this.fetchDebounce);
     clearTimeout(this.renderDebounce);
@@ -166,7 +187,7 @@ class VirtualGuide {
     // Track scroll direction
     const scrollDelta = scrollTop - (this.lastScrollTop || 0);
     this.lastScrollTop = scrollTop;
-    if (Math.abs(scrollDelta) > 5) { // Ignore tiny movements
+    if (Math.abs(scrollDelta) > D.SCROLL_DIRECTION_THRESHOLD) {
       this.scrollDirection = scrollDelta > 0 ? 'down' : 'up';
     }
 
@@ -183,12 +204,12 @@ class VirtualGuide {
       this.renderDebounce = setTimeout(() => {
         this.renderedRange = { start: desiredStart, end: desiredEnd };
         this.render();
-      }, 16); // ~60fps for smooth visual update
+      }, D.RENDER_DEBOUNCE_MS);
 
       // Debounce fetching - wait for scroll to settle before fetching
       this.fetchDebounce = setTimeout(() => {
         this.updateVisibleRange();
-      }, 150); // Wait 150ms for scroll to settle
+      }, D.FETCH_DEBOUNCE_MS);
     }
   }
 
@@ -229,13 +250,20 @@ class VirtualGuide {
 
     // Fetch in priority order, re-rendering after each batch
     for (const batch of fetchOrder) {
-      await this.fetchMissingRanges(batch.ranges);
+      const success = await this.fetchMissingRanges(batch.ranges);
       // Re-render after each batch so visible content appears first
       this.renderedRange = { start: bufferStart, end: bufferEnd };
       this.render();
+
+      if (!success) {
+        // A pending fetch exists or we just aborted one - don't fetch lower-priority buffers
+        // The recheck timeout will re-call updateVisibleRange with correct priorities
+        break;
+      }
     }
 
-    // Final render
+    // Always do a final render to ensure current position is shown
+    // This handles the case where fetchOrder is empty (all rows cached)
     this.renderedRange = { start: bufferStart, end: bufferEnd };
     this.render();
   }
@@ -260,10 +288,15 @@ class VirtualGuide {
     return ranges;
   }
 
+  /**
+   * Fetch missing rows for the given ranges.
+   * @returns {Promise<boolean>} true if fetch completed (or nothing to fetch),
+   *          false if a pending fetch blocked us or we aborted one
+   */
   async fetchMissingRanges(ranges) {
     // Early return if no ranges to fetch
     if (!ranges || ranges.length === 0) {
-      return;
+      return true;
     }
 
     // Merge into a single request for simplicity
@@ -278,24 +311,31 @@ class VirtualGuide {
 
         if (overlaps) {
           // Pending fetch will give us some useful data, let it finish
-          // But schedule a re-check after it completes to catch any remaining gaps
+          // The recheck timeout will catch any remaining gaps
           this.needsRecheck = true;
-          return;
-        } else {
-          // Pending fetch is for a completely different area - abort it
-          this.pendingFetch.abort();
+          return false;
         }
-      } else {
-        // Orphaned pending fetch (no range tracked) - abort it
-        this.pendingFetch.abort();
       }
+      // Non-overlapping or orphaned pending fetch - abort it
+      // Return false so caller doesn't continue to lower-priority fetches
+      this.pendingFetch.abort();
       this.pendingFetch = null;
       this.pendingFetchRange = null;
+
+      // CRITICAL: Schedule recheck ourselves since the aborted fetch's finally
+      // block won't do it (we already set pendingFetch = null)
+      clearTimeout(this.recheckTimeout);
+      this.recheckTimeout = setTimeout(() => {
+        this.updateVisibleRange();
+      }, 50);
+      return false;
     }
 
     const controller = new AbortController();
     this.pendingFetch = controller;
     this.pendingFetchRange = { start: overallStart, end: overallEnd };
+    // Clear needsRecheck since we're now fetching what we need
+    this.needsRecheck = false;
 
     try {
       // Don't pass cats - server uses saved user filter
@@ -351,13 +391,16 @@ class VirtualGuide {
         this.pendingFetch = null;
         this.pendingFetchRange = null;
 
-        // If something requested a recheck while we were fetching, do it now
-        if (this.needsRecheck) {
-          this.needsRecheck = false;
-          setTimeout(() => this.updateVisibleRange(), 0);
-        }
+        // Always recheck after fetch completes to catch any gaps
+        // Use a small delay to batch multiple rapid rechecks
+        clearTimeout(this.recheckTimeout);
+        this.recheckTimeout = setTimeout(() => {
+          this.updateVisibleRange();
+        }, 50);
       }
     }
+
+    return true;
   }
 
   render() {
@@ -530,6 +573,42 @@ class VirtualGuide {
         </div>
       </div>
     `;
+  }
+
+  /**
+   * Clean up resources when the virtual guide is no longer needed.
+   * Call this before removing/reinitializing to prevent memory leaks.
+   */
+  destroy() {
+    // Clear all timers
+    clearTimeout(this.fetchDebounce);
+    clearTimeout(this.renderDebounce);
+    clearTimeout(this.scrollDebounce);
+    clearTimeout(this.recheckTimeout);
+
+    // Abort any pending fetch
+    if (this.pendingFetch) {
+      this.pendingFetch.abort();
+      this.pendingFetch = null;
+      this.pendingFetchRange = null;
+    }
+
+    // Clear caches
+    this.cache.clear();
+    this.failedRanges.clear();
+
+    // Clear DOM references
+    if (this.content) {
+      this.content.innerHTML = '';
+    }
+    this.viewport = null;
+    this.content = null;
+    this.spacer = null;
+    this.container = null;
+
+    // Note: Event listeners on window (resize) are not removed
+    // as they use anonymous functions. For full cleanup, would need
+    // to store references to bound handlers in constructor.
   }
 }
 
