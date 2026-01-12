@@ -2,7 +2,7 @@
 # Test Real-ESRGAN super-resolution performance via ffmpeg libtorch backend
 set -e
 
-FFMPEG="${FFMPEG:-$HOME/ffmpeg_build/bin/ffmpeg}"
+FFMPEG="${FFMPEG:-$HOME/.local/bin/ffmpeg}"
 MODEL_DIR="${MODEL_DIR:-$HOME/ffmpeg_build/models}"
 MODEL="${MODEL:-realesr-general-x4v3.pt}"
 MODEL_PATH="$MODEL_DIR/$MODEL"
@@ -50,7 +50,7 @@ echo "Test: ${RESOLUTION} @ ${FPS}fps, ${FRAMES} frames"
 echo ""
 
 # Preload libtorch_cuda if needed (workaround for dynamic loading)
-LIBTORCH_DIR="$HOME/ffmpeg_sources/libtorch/lib"
+LIBTORCH_DIR="${LIBTORCH_DIR:-$HOME/.local/lib}"
 if [ -f "$LIBTORCH_DIR/libtorch_cuda.so" ]; then
     export LD_PRELOAD="$LIBTORCH_DIR/libtorch_cuda.so"
 fi

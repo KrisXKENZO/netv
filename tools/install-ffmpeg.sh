@@ -693,6 +693,10 @@ if [ "$ENABLE_TORCH" = "1" ]; then
     LIBTORCH_FLAGS=(--enable-libtorch)
     echo "Using LibTorch: $LIBTORCH_PATH"
 
+    # Copy libtorch shared libs to permanent location (LIB_DIR)
+    echo "Installing libtorch libs to $LIB_DIR..."
+    cp -a "$LIBTORCH_DIR/lib"/*.so* "$LIB_DIR/" 2>/dev/null || true
+
     # Create pkg-config file for libtorch (FFmpeg configure uses pkg-config for detection)
     mkdir -p "$BUILD_DIR/lib/pkgconfig"
     # Include CUDA libs if using CUDA variant
@@ -707,7 +711,7 @@ if [ "$ENABLE_TORCH" = "1" ]; then
     cat > "$BUILD_DIR/lib/pkgconfig/libtorch.pc" << PCEOF
 prefix=$LIBTORCH_DIR
 exec_prefix=\${prefix}
-libdir=\${exec_prefix}/lib
+libdir=$LIB_DIR
 includedir=\${prefix}/include
 
 Name: libtorch
@@ -779,7 +783,7 @@ if [ "$ENABLE_TORCH" = "1" ]; then
     if [ "$ENABLE_NVIDIA_CUDA" = "1" ]; then
         EXTRA_CXXFLAGS="$EXTRA_CXXFLAGS -I$CUDA_PATH/include"
     fi
-    EXTRA_LDFLAGS="$EXTRA_LDFLAGS -L$LIBTORCH_PATH/lib -Wl,-rpath,$LIBTORCH_PATH/lib"
+    EXTRA_LDFLAGS="$EXTRA_LDFLAGS -L$LIB_DIR -Wl,-rpath,$LIB_DIR"
 fi
 CONFIGURE_CMD=(
     ./configure
