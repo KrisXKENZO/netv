@@ -136,9 +136,9 @@ set -e
 # Hardware acceleration (set to 1 to enable)
 ENABLE_NVIDIA_CUDA=${ENABLE_NVIDIA_CUDA:-1}  # NVENC/NVDEC hardware encoding/decoding
 ENABLE_AMD_AMF=${ENABLE_AMD_AMF:-1}          # AMD AMF hardware encoding (requires AMD GPU)
-ENABLE_TORCH=${ENABLE_TORCH:-1}              # LibTorch DNN backend for AI filters
+ENABLE_LIBTORCH=${ENABLE_LIBTORCH:-1}              # LibTorch DNN backend for AI filters
 
-# LibTorch CUDA variant (only used if ENABLE_TORCH=1)
+# LibTorch CUDA variant (only used if ENABLE_LIBTORCH=1)
 # LIBTORCH_VARIANT options:
 #   "cu124"   - (default) CUDA 12.4 - required for FFmpeg compatibility (initXPU API)
 #               Note: cu124 binaries work on CUDA 12.4+ runtimes (forward compatible)
@@ -645,7 +645,7 @@ fi
 # NOTE: LibTorch 2.6.0+ renamed initXPU() to init(). We patch ffmpeg to handle both.
 #       Use 2.7.0+ for RTX 50-series (Blackwell/SM 12.0) support.
 LIBTORCH_FLAGS=()
-if [ "$ENABLE_TORCH" = "1" ]; then
+if [ "$ENABLE_LIBTORCH" = "1" ]; then
     LIBTORCH_VERSION=${LIBTORCH_VERSION:-2.5.0}
     LIBTORCH_DIR="$SRC_DIR/libtorch"
 
@@ -742,7 +742,7 @@ if [ ! -d "$FFMPEG_DIR" ]; then
 fi
 
 # Patch ffmpeg's torch backend
-if [ "$ENABLE_TORCH" = "1" ]; then
+if [ "$ENABLE_LIBTORCH" = "1" ]; then
     TORCH_BACKEND="$FFMPEG_DIR/libavfilter/dnn/dnn_backend_torch.cpp"
 
     # Patch 1: Fix initXPU() -> init() for libtorch 2.6+ compatibility
@@ -788,7 +788,7 @@ if [ "$BUILD_LIBPLACEBO" = "1" ]; then
     EXTRA_CFLAGS="$EXTRA_CFLAGS -I$VULKAN_SDK/include"
     EXTRA_LDFLAGS="$EXTRA_LDFLAGS -L$VULKAN_SDK/lib"
 fi
-if [ "$ENABLE_TORCH" = "1" ]; then
+if [ "$ENABLE_LIBTORCH" = "1" ]; then
     # LibTorch needs C++ flags (FFmpeg uses require_cxx for libtorch detection)
     # Include CUDA path for CUDA torch support
     EXTRA_CXXFLAGS="-I$LIBTORCH_PATH/include -I$LIBTORCH_PATH/include/torch/csrc/api/include"
