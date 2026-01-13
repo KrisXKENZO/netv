@@ -224,6 +224,24 @@
 
       form.addEventListener('submit', e => e.preventDefault());
     });
+
+    // Delete source buttons
+    document.querySelectorAll('.delete-source-btn').forEach(btn => {
+      btn.addEventListener('click', async () => {
+        const sourceId = btn.dataset.sourceId;
+        if (!confirm('Delete this source?')) return;
+        btn.disabled = true;
+        btn.textContent = 'Deleting...';
+        try {
+          const resp = await fetch(`/settings/delete/${sourceId}`, { method: 'POST' });
+          if (resp.ok) location.reload();
+          else throw new Error('Delete failed');
+        } catch {
+          btn.disabled = false;
+          btn.textContent = 'Delete';
+        }
+      });
+    });
   }
 
   // ============================================================
