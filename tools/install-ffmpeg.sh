@@ -258,7 +258,7 @@ APT_PACKAGES=(
 [ "$BUILD_LIBVA" != "1" ] && APT_PACKAGES+=(libva-dev)
 [ "$BUILD_LIBJXL" != "1" ] && APT_PACKAGES+=(libjxl-dev)
 [ "$BUILD_LIBX264" != "1" ] && APT_PACKAGES+=(libx264-dev)
-[ "$ENABLE_TENSORRT" = "1" ] && APT_PACKAGES+=(libnvinfer-dev libnvinfer-headers-dev libnvinfer-plugin-dev)
+# Note: TensorRT packages (libnvinfer-dev) installed later after CUDA repo is set up
 if [ "$SKIP_DEPS" != "1" ]; then
     sudo apt-get update && sudo apt-get install -y "${APT_PACKAGES[@]}"
 fi
@@ -306,6 +306,11 @@ if [ "$ENABLE_NVIDIA_CUDA" = "1" ]; then
 
         # Install CUDA packages
         sudo apt-get install -y libffmpeg-nvenc-dev cuda-nvcc-$CUDA_VERSION cuda-cudart-dev-$CUDA_VERSION
+
+        # Install TensorRT packages (requires NVIDIA repo set up above)
+        if [ "$ENABLE_TENSORRT" = "1" ]; then
+            sudo apt-get install -y libnvinfer-dev libnvinfer-headers-dev libnvinfer-plugin-dev
+        fi
     fi
     echo "Using CUDA version: $CUDA_VERSION"
 
