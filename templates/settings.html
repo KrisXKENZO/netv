@@ -790,10 +790,8 @@
             </div>
           </div>
           <div class="flex justify-end">
-            <form action="/settings/delete/{{ source.id }}" method="POST">
-              <button type="submit" class="px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded text-sm"
-                      onclick="return confirm('Delete this source?')">Delete</button>
-            </form>
+            <button type="button" class="delete-source-btn px-3 py-1.5 bg-red-600 hover:bg-red-700 rounded text-sm"
+                    data-source-id="{{ source.id }}">Delete</button>
           </div>
         </form>
       </details>
