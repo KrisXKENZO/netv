@@ -35,9 +35,7 @@ COPY static/ static/
 COPY tools/ tools/
 
 # Install Python dependencies (app + ai_upscale group)
-RUN pip install --no-cache-dir --break-system-packages uv && \
-    uv pip install --system --no-cache . && \
-    uv pip install --system --no-cache torch onnx tensorrt
+RUN pip install --no-cache-dir --break-system-packages . torch onnx tensorrt
 
 # Runtime config
 EXPOSE 8000
@@ -51,7 +49,7 @@ ENV SR_ENGINE_DIR=/models
 RUN useradd -m netv
 
 # Copy entrypoint and set permissions
-COPY entrypoint-ai.sh /app/entrypoint.sh
+COPY entrypoint-ai_upscale.sh /app/entrypoint.sh
 RUN chmod +x /app/entrypoint.sh
 
 # Create models directory (will be a volume mount point)
