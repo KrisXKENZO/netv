@@ -95,8 +95,8 @@ _has_libplacebo: bool | None = None  # None = not probed yet
 _load_settings: Callable[[], dict[str, Any]] = dict
 
 # Super-resolution configuration (set by init())
-_sr_model_path: str = ""
-_sr_libtorch_path: str = ""
+# Directory containing TensorRT engines: realesrgan_{480,720,1080}p_fp16.engine
+_sr_engine_dir: str = ""
 
 # Use old "cache" if it exists (backwards compat), otherwise ".cache"
 _OLD_CACHE = pathlib.Path(__file__).parent / "cache"
@@ -146,17 +146,15 @@ class MediaInfo:
 
 def init(
     load_settings: Callable[[], dict[str, Any]],
-    sr_model_path: str = "",
-    sr_libtorch_path: str = "",
+    sr_engine_dir: str = "",
 ) -> None:
     """Initialize module with settings loader and optional SR config."""
-    global _load_settings, _sr_model_path, _sr_libtorch_path
+    global _load_settings, _sr_engine_dir
     _load_settings = load_settings
-    _sr_model_path = sr_model_path
-    _sr_libtorch_path = sr_libtorch_path
+    _sr_engine_dir = sr_engine_dir
     _load_series_probe_cache()
-    if _sr_model_path and _sr_libtorch_path:
-        log.info("SR enabled: model=%s", _sr_model_path)
+    if _sr_engine_dir:
+        log.info("SR enabled: engine_dir=%s", _sr_engine_dir)
 
 
 def get_settings() -> dict[str, Any]:
@@ -172,7 +170,7 @@ def get_ffmpeg_env() -> dict[str, str] | None:
 
 def _build_sr_filter(sr_mode: str, source_height: int, target_height: int) -> str:
     """Build SR filter string if needed. Returns empty string if no SR."""
-    if not _sr_model_path or sr_mode == "off":
+    if not _sr_engine_dir or sr_mode == "off":
         return ""
 
     # Determine if SR should be applied based on mode and source resolution
@@ -192,11 +190,31 @@ def _build_sr_filter(sr_mode: str, source_height: int, target_height: int) -> st
     if not apply_sr:
         return ""
 
+    # Select engine based on source resolution (TensorRT needs fixed input dimensions)
+    # Scale input to match engine, apply SR (4x), then scale to target
+    if source_height <= 540:
+        engine_name = "realesrgan_480p_fp16.engine"
+        engine_height, engine_width = 480, 848  # 16:9 rounded to 8
+    elif source_height <= 900:
+        engine_name = "realesrgan_720p_fp16.engine"
+        engine_height, engine_width = 720, 1280
+    else:
+        engine_name = "realesrgan_1080p_fp16.engine"
+        engine_height, engine_width = 1080, 1920
+
+    engine_path = f"{_sr_engine_dir}/{engine_name}"
+
     # Build SR filter chain:
-    # 1. Convert to RGB (model expects 3-channel RGB input)
-    # 2. Apply SR via dnn_processing (outputs 4x resolution)
-    # 3. Scale to target using Area algorithm (best for downscaling)
-    sr_filter = f"format=rgb24,dnn_processing=dnn_backend=torch:model={_sr_model_path}"
+    # 1. Scale to engine's expected input size (preserving aspect with padding if needed)
+    # 2. Convert to RGB (model expects 3-channel RGB input)
+    # 3. Apply SR via TensorRT dnn_processing (outputs 4x resolution)
+    # 4. Scale to target using Area algorithm (best for downscaling)
+    sr_filter = (
+        f"scale={engine_width}:{engine_height}:force_original_aspect_ratio=decrease,"
+        f"pad={engine_width}:{engine_height}:(ow-iw)/2:(oh-ih)/2,"
+        f"format=rgb24,"
+        f"dnn_processing=dnn_backend=tensorrt:model={engine_path}"
+    )
     if target_height:
         sr_filter += f",scale=-2:{target_height}:flags=area"
     return sr_filter
@@ -775,7 +793,7 @@ def _build_video_args(
 
     # Check if SR should be applied (VOD only, discrete GPUs)
     sr_filter = ""
-    if sr_mode != "off" and enc_type in ("nvenc", "amf") and _sr_model_path:
+    if sr_mode != "off" and enc_type in ("nvenc", "amf") and _sr_engine_dir:
         sr_filter = _build_sr_filter(sr_mode, source_height, max_h or 0)
         # SR requires CPU frames, so disable hw pipeline when SR active
         if sr_filter:
@@ -1034,7 +1052,7 @@ def build_hls_ffmpeg_cmd(
     needs_scale = media_info and media_info.height > max_h
 
     # SR requires re-encode (can't copy video when SR is active)
-    sr_active = is_vod and sr_mode != "off" and _sr_model_path
+    sr_active = is_vod and sr_mode != "off" and _sr_engine_dir
 
     copy_video = bool(
         media_info

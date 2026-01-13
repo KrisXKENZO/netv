@@ -118,23 +118,19 @@ APP_DIR = pathlib.Path(__file__).parent
 TEMPLATES = Jinja2Templates(directory=APP_DIR / "templates")
 TEMPLATES.env.auto_reload = True
 
-# Super-resolution model path (compact model for real-time processing)
-SR_MODEL_PATH = pathlib.Path(
+# Super-resolution engine directory (TensorRT engines for different resolutions)
+SR_ENGINE_DIR = pathlib.Path(
     os.environ.get(
-        "SR_MODEL_PATH", pathlib.Path.home() / "ffmpeg_build/models/realesr-general-x4v3.pt"
+        "SR_ENGINE_DIR", pathlib.Path.home() / "ffmpeg_build/models"
     )
-)
-
-# LibTorch library path for ffmpeg DNN backend (optional - ffmpeg has rpath baked in)
-LIBTORCH_LIB_PATH = os.environ.get(
-    "LIBTORCH_LIB_PATH",
-    str(pathlib.Path.home() / "ffmpeg_sources/libtorch/lib"),
 )
 
 
 def is_sr_available() -> bool:
-    """Check if super-resolution is available (model exists, ffmpeg has libtorch via rpath)."""
-    return SR_MODEL_PATH.exists()
+    """Check if super-resolution is available (at least one TensorRT engine exists)."""
+    if not SR_ENGINE_DIR.exists():
+        return False
+    return any(SR_ENGINE_DIR.glob("realesrgan_*p_fp16.engine"))
 
 
 def _logo_url_filter(url: str) -> str:
@@ -184,8 +180,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # Initialize transcoding module with settings callback
     ffmpeg_command.init(
         load_server_settings,
-        sr_model_path=str(SR_MODEL_PATH) if is_sr_available() else "",
-        sr_libtorch_path=LIBTORCH_LIB_PATH if is_sr_available() else "",
+        sr_engine_dir=str(SR_ENGINE_DIR) if is_sr_available() else "",
     )
 
     # Kill orphaned ffmpeg processes
