@@ -868,6 +868,12 @@ if [ "$ENABLE_TENSORRT" = "1" ]; then
         echo "WARNING: dnn_cuda_kernels.cu not found in $PATCH_DIR"
     fi
 
+    # Copy patched vf_dnn_processing.c for CUDA frame support
+    if [ -f "$PATCH_DIR/vf_dnn_processing.c" ]; then
+        cp "$PATCH_DIR/vf_dnn_processing.c" "$FFMPEG_DIR/libavfilter/"
+        echo "Copied vf_dnn_processing.c with CUDA frame support"
+    fi
+
     # Patch dnn_interface.h to add DNN_TRT enum and TRTOptions
     DNN_INTERFACE_H="$FFMPEG_DIR/libavfilter/dnn_interface.h"
     if [ -f "$DNN_INTERFACE_H" ] && ! grep -q "DNN_TRT" "$DNN_INTERFACE_H"; then
