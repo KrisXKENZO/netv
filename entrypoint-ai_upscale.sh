@@ -27,15 +27,18 @@ fi
 
 # Build TensorRT engines if missing (first run only)
 # Uses install-ai_upscale.sh as source of truth
-if ! ls /models/realesrgan_*p_fp16.engine >/dev/null 2>&1; then
+# Set SR_MODEL env var to choose model (default: 4x-compact)
+SR_MODEL="${SR_MODEL:-4x-compact}"
+if ! ls /models/${SR_MODEL}_*p_fp16.engine >/dev/null 2>&1; then
     echo "========================================"
     echo "AI Upscale: First start detected"
     echo "========================================"
     echo "Building TensorRT engines for your GPU..."
+    echo "Model: $SR_MODEL"
     echo "This only happens once (cached in /models volume)."
     echo ""
     # Run as netv user so files have correct ownership
-    gosu netv env MODEL_DIR=/models /app/tools/install-ai_upscale.sh
+    gosu netv env MODEL_DIR=/models MODEL="$SR_MODEL" /app/tools/install-ai_upscale.sh
 fi
 
 # Drop to netv user and run the app

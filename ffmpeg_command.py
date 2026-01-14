@@ -10,6 +10,7 @@ from typing import Any, Literal
 import json
 import logging
 import pathlib
+import re
 import subprocess
 import tempfile
 import threading
@@ -95,7 +96,7 @@ _has_libplacebo: bool | None = None  # None = not probed yet
 _load_settings: Callable[[], dict[str, Any]] = dict
 
 # Super-resolution configuration (set by init())
-# Directory containing TensorRT engines: realesrgan_{480,720,1080}p_fp16.engine
+# Directory containing TensorRT engines: {model}_{height}p_fp16.engine
 _sr_engine_dir: str = ""
 
 # Use old "cache" if it exists (backwards compat), otherwise ".cache"
@@ -168,13 +169,112 @@ def get_ffmpeg_env() -> dict[str, str] | None:
     return None
 
 
+def _find_sr_engine(model_name: str, source_height: int) -> tuple[str, int, int, int] | None:
+    """Find the best matching SR engine file for the given model and resolution.
+
+    Returns (engine_path, input_height, input_width, scale_factor) or None if not found.
+    """
+    import pathlib
+
+    engine_dir = pathlib.Path(_sr_engine_dir)
+    if not engine_dir.exists():
+        return None
+
+    # Find all engines for this model
+    # Engine naming: {model}_{height}p_fp16.engine
+    engines: list[tuple[int, pathlib.Path]] = []
+    for engine in engine_dir.glob(f"{model_name}_*p_fp16.engine"):
+        # Extract height from filename
+        name = engine.stem  # e.g., "2x-liveaction-span_1080p_fp16"
+        parts = name.rsplit("_", 2)
+        if len(parts) >= 3:
+            height_str = parts[1].rstrip("p")
+            if height_str.isdigit():
+                engines.append((int(height_str), engine))
+
+    if not engines:
+        return None
+
+    # Determine scale factor from model name prefix (e.g., "2x-", "4x-")
+    scale_match = re.match(r"^(\d+)x-", model_name)
+    if scale_match:
+        scale = int(scale_match.group(1))
+    elif model_name == "realesrgan":
+        # Legacy model name - was 4x
+        scale = 4
+    else:
+        log.error(
+            "SR: cannot determine scale from model name: %s (expected Nx- prefix)", model_name
+        )
+        return None
+
+    # Sort by height ascending
+    engines.sort(key=lambda x: x[0])
+
+    # Select appropriate engine based on source height
+    if source_height <= 0:
+        # Probe failed - use highest resolution engine
+        engine_height, engine_path = engines[-1]
+        log.warning("SR: probe failed, using %dp engine", engine_height)
+    else:
+        # Find engine closest to but >= source height, or use largest if source is bigger
+        engine_height, engine_path = engines[-1]  # default to largest
+        for h, p in engines:
+            if h >= source_height:
+                engine_height, engine_path = h, p
+                break
+
+    # Calculate width assuming 16:9 aspect ratio, rounded to multiple of 8
+    engine_width = ((engine_height * 16 // 9) + 7) // 8 * 8
+
+    return str(engine_path), engine_height, engine_width, scale
+
+
+def _get_available_sr_models() -> list[str]:
+    """Get list of available SR models from engine directory."""
+    import pathlib
+
+    if not _sr_engine_dir:
+        return []
+
+    engine_dir = pathlib.Path(_sr_engine_dir)
+    if not engine_dir.exists():
+        return []
+
+    models = set()
+    for engine in engine_dir.glob("*_*p_fp16.engine"):
+        name = engine.stem
+        parts = name.rsplit("_", 2)
+        if len(parts) >= 3:
+            models.add(parts[0])
+    return sorted(models)
+
+
 def _build_sr_filter(sr_mode: str, source_height: int, target_height: int) -> str:
     """Build AI Upscale filter string if needed. Returns empty string if disabled."""
     if not _sr_engine_dir or sr_mode == "off":
         return ""
 
+    # Get selected model from settings (or auto-detect first available)
+    settings = _load_settings()
+    model_name = settings.get("sr_model", "")
+    if not model_name:
+        # Auto-select first available model (prefer 2x models)
+        available = _get_available_sr_models()
+        if not available:
+            return ""
+        # Prefer 2x models over 4x
+        model_name = next((m for m in available if m.startswith("2x-")), available[0])
+
+    # Find engine for this model and resolution
+    engine_info = _find_sr_engine(model_name, source_height)
+    if not engine_info:
+        log.warning("SR: no engine found for model=%s, source=%dp", model_name, source_height)
+        return ""
+
+    engine_path, engine_height, engine_width, scale = engine_info
+
     # Determine if SR should be applied based on mode and source resolution
-    # SR model is 4x upscale, so we upscale then use Area to scale to target
     apply_sr = False
 
     if sr_mode == "enhance":
@@ -190,31 +290,19 @@ def _build_sr_filter(sr_mode: str, source_height: int, target_height: int) -> st
     if not apply_sr:
         return ""
 
-    # Select engine based on source resolution (TensorRT needs fixed input dimensions)
-    # Scale input to match engine, apply SR (4x), then scale to target
-    # Default to 720p engine if probe failed (source_height <= 0)
-    if source_height <= 0:
-        # Probe failed - default to 720p engine (good middle ground)
-        log.warning("SR: probe failed (height=%d), defaulting to 720p engine", source_height)
-        engine_name = "realesrgan_720p_fp16.engine"
-        engine_height, engine_width = 720, 1280
-    elif source_height <= 540:
-        engine_name = "realesrgan_480p_fp16.engine"
-        engine_height, engine_width = 480, 848  # 16:9 rounded to 8
-    elif source_height <= 900:
-        engine_name = "realesrgan_720p_fp16.engine"
-        engine_height, engine_width = 720, 1280
-    else:
-        engine_name = "realesrgan_1080p_fp16.engine"
-        engine_height, engine_width = 1080, 1920
-
-    engine_path = f"{_sr_engine_dir}/{engine_name}"
+    log.info(
+        "SR: applying %s (%dx) to %dp -> %dp",
+        model_name,
+        scale,
+        source_height,
+        target_height or (source_height * scale),
+    )
 
     # Build SR filter chain:
     # 1. Scale to engine's expected input size (preserving aspect with padding if needed)
     # 2. Convert to RGB (model expects 3-channel RGB input)
     # 3. hwupload to GPU (critical for performance - keeps data on GPU)
-    # 4. Apply SR via TensorRT dnn_processing (outputs 4x resolution on GPU)
+    # 4. Apply SR via TensorRT dnn_processing (outputs Nx resolution on GPU)
     # 5. Scale down on GPU to target resolution
     sr_filter = (
         f"scale={engine_width}:{engine_height}:force_original_aspect_ratio=decrease,"

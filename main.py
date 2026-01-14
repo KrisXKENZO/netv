@@ -124,11 +124,26 @@ SR_ENGINE_DIR = pathlib.Path(
 )
 
 
+def get_sr_models() -> list[str]:
+    """Get available AI Upscale models (unique model names from engine files)."""
+    if not SR_ENGINE_DIR.exists():
+        return []
+    # Engine files are named: {model}_{height}p_fp16.engine
+    # e.g., 2x-liveaction-span_1080p_fp16.engine, realesrgan_720p_fp16.engine
+    models = set()
+    for engine in SR_ENGINE_DIR.glob("*_*p_fp16.engine"):
+        # Extract model name by removing _{height}p_fp16.engine suffix
+        name = engine.stem  # e.g., "2x-liveaction-span_1080p_fp16"
+        # Remove _fp16 and _{height}p
+        parts = name.rsplit("_", 2)  # ["2x-liveaction-span", "1080p", "fp16"]
+        if len(parts) >= 3:
+            models.add(parts[0])
+    return sorted(models)
+
+
 def is_sr_available() -> bool:
     """Check if AI Upscale is available (at least one TensorRT engine exists)."""
-    if not SR_ENGINE_DIR.exists():
-        return False
-    return any(SR_ENGINE_DIR.glob("realesrgan_*p_fp16.engine"))
+    return len(get_sr_models()) > 0
 
 
 def _logo_url_filter(url: str) -> str:
@@ -2096,6 +2111,8 @@ async def settings_page(request: Request, user: Annotated[dict, Depends(require_
             "user_agent_custom": server_settings.get("user_agent_custom", ""),
             "available_encoders": AVAILABLE_ENCODERS,
             "sr_available": is_sr_available(),
+            "sr_models": get_sr_models(),
+            "sr_model": server_settings.get("sr_model", ""),
             "sr_mode": server_settings.get("sr_mode", "off"),
             "all_users": auth.get_users_with_admin(),
             "all_groups": _build_all_groups(),
@@ -2625,12 +2642,16 @@ async def settings_transcode(
     probe_movies: Annotated[str | None, Form()] = None,
     probe_series: Annotated[str | None, Form()] = None,
     sr_mode: Annotated[str, Form()] = "off",
+    sr_model: Annotated[str, Form()] = "",
 ):
     settings = load_server_settings()
     settings["transcode_mode"] = transcode_mode
     settings["sr_mode"] = (
         sr_mode if sr_mode in ("off", "enhance", "upscale_1080", "upscale_4k") else "off"
     )
+    # Validate sr_model against available models
+    available_models = get_sr_models()
+    settings["sr_model"] = sr_model if sr_model in available_models else ""
     settings["transcode_hw"] = transcode_hw
     settings["max_resolution"] = max_resolution
     settings["quality"] = quality if quality in ("high", "medium", "low") else "high"

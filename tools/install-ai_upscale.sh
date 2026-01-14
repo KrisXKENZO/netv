@@ -1,25 +1,59 @@
 #!/bin/bash
-# Build TensorRT engines for AI Upscale (Real-ESRGAN)
+# Build TensorRT engines for AI Upscale
 #
 # Prerequisites: uv sync --group ai_upscale
 #   Or: pip install torch onnx tensorrt
 #
-# TODO: Harvest additional models from https://openmodeldb.info/
-#       - Browse by architecture (Compact, ESRGAN, etc.) and scale factor
-#       - Many community-trained models optimized for specific content types
+# Models sourced from https://openmodeldb.info/
 #
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 MODEL_DIR="${MODEL_DIR:-$HOME/ffmpeg_build/models}"
+MODEL="${MODEL:-4x-compact}"
+
+# Show help
+if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+    echo "Usage: $0 [MODEL]"
+    echo ""
+    echo "Build TensorRT engines for AI Upscale."
+    echo ""
+    echo "Arguments:"
+    echo "  MODEL    Model to build, or 'all' for all models (default: $MODEL)"
+    echo ""
+    echo "Environment:"
+    echo "  MODEL_DIR   Output directory (default: \$HOME/ffmpeg_build/models)"
+    echo "  MODEL       Model name (can also be passed as argument)"
+    echo ""
+    echo "Available models:"
+    python3 "$SCRIPT_DIR/export-tensorrt.py" --list
+    exit 0
+fi
+
+# Allow model to be passed as argument
+if [ -n "$1" ]; then
+    MODEL="$1"
+fi
+
+# Handle "all" option - build all available models
+if [ "$MODEL" = "all" ]; then
+    echo "========================================"
+    echo "AI Upscale: Building ALL models"
+    echo "========================================"
+    echo ""
+    for m in 2x-liveaction-span 2x-realesrgan 2x-nomosuni 4x-compact 4x-rrdbnet; do
+        echo ">>> Building $m..."
+        MODEL="$m" "$0"
+        echo ""
+    done
+    echo "All models built!"
+    exit 0
+fi
 
 echo "========================================"
 echo "AI Upscale: TensorRT Engine Builder"
 echo "========================================"
-echo "Model: realesr-general-x4v3 (SRVGGNetCompact)"
-echo "  - 1.2M params, ~64 fps @ 720p->4K"
-echo "  - 4x upscale"
-echo ""
+echo "Model: $MODEL"
 echo "Output: $MODEL_DIR/"
 echo ""
 
@@ -35,20 +69,36 @@ fi
 # Create output directory
 mkdir -p "$MODEL_DIR"
 
+# Determine resolutions based on model scale
+case "$MODEL" in
+    2x-*)
+        # 2x models: 720p and 1080p input -> 1440p and 4K output
+        RESOLUTIONS="720 1080"
+        ;;
+    4x-*)
+        # 4x models: 480p, 720p, 1080p input -> 1080p, 4K, 4K output
+        RESOLUTIONS="480 720 1080"
+        ;;
+    *)
+        # Default to 2x resolutions
+        RESOLUTIONS="720 1080"
+        ;;
+esac
+
 # Build engines for common resolutions (FFmpeg TensorRT backend needs fixed shapes)
-echo "Building TensorRT engines for common resolutions..."
+echo "Building TensorRT engines for resolutions: $RESOLUTIONS"
 echo ""
 
-for res in 480 720 1080; do
-    engine="$MODEL_DIR/realesrgan_${res}p_fp16.engine"
+for res in $RESOLUTIONS; do
+    engine="$MODEL_DIR/${MODEL}_${res}p_fp16.engine"
     if [ -f "$engine" ]; then
         echo "  ${res}p: already exists, skipping"
     else
         echo "  ${res}p: building..."
         python3 "$SCRIPT_DIR/export-tensorrt.py" \
-            --model-type compact \
+            --model "$MODEL" \
             --min-height $res --opt-height $res --max-height $res \
-            -o "$engine" 2>&1 | grep -E "^(Downloading|Loading|Loaded|Engine saved)"
+            -o "$engine" 2>&1 | grep -E "^(Downloading|Using cached|Loading|Using ONNX|Engine saved|  )"
     fi
 done
 
@@ -57,11 +107,15 @@ echo "========================================"
 echo "Installation complete!"
 echo "========================================"
 echo ""
-echo "Engines:"
-ls -lh "$MODEL_DIR"/*.engine 2>/dev/null | awk '{print "  " $NF " (" $5 ")"}'
+echo "Engines built:"
+ls -lh "$MODEL_DIR"/${MODEL}_*.engine 2>/dev/null | awk '{print "  " $NF " (" $5 ")"}'
+echo ""
+echo "To use a different model, run:"
+echo "  MODEL=2x-realesrgan $0"
+echo "  MODEL=2x-nomosuni $0"
 echo ""
 echo "Test with:"
 echo "  ffmpeg -init_hw_device cuda=cu -filter_hw_device cu \\"
-echo "    -f lavfi -i testsrc=duration=3:size=1280x720:rate=30 \\"
-echo "    -vf \"format=rgb24,hwupload,dnn_processing=dnn_backend=8:model=$MODEL_DIR/realesrgan_720p_fp16.engine\" \\"
+echo "    -f lavfi -i testsrc=duration=3:size=1920x1080:rate=30 \\"
+echo "    -vf \"format=rgb24,hwupload,dnn_processing=dnn_backend=8:model=$MODEL_DIR/${MODEL}_1080p_fp16.engine\" \\"
 echo "    -c:v hevc_nvenc test.mp4"

@@ -1,21 +1,28 @@
 #!/usr/bin/env python3
-"""Export PyTorch models to TensorRT engines for FFmpeg dnn_processing filter.
+"""Export upscaling models to TensorRT engines for FFmpeg dnn_processing filter.
 
-This script converts Real-ESRGAN models to TensorRT engines (.engine files)
+This script converts AI upscaling models to TensorRT engines (.engine files)
 that can be loaded by FFmpeg's TensorRT DNN backend.
 
-Default model: realesr-general-x4v3 (SRVGGNetCompact) - fast, good quality
-Alternative: RealESRGAN_x4plus (RRDBNet) - slow, best quality
+Available models (use --list to see all):
+  2x models (1080p → 4K):
+    - 2x-liveaction-span    Best for live action TV/film (recommended)
+    - 2x-realesrgan         Official Real-ESRGAN 2x
+    - 2x-nomosuni           Heavy compression handling
+
+  4x models (720p → 4K, 480p → 1080p):
+    - 4x-compact            Fast, good quality (SRVGGNetCompact)
+    - 4x-rrdbnet            Slow, highest quality (RRDBNet)
 
 Usage:
-    # Export default compact model (recommended)
-    python export-tensorrt.py --output model.engine
+    # List available models
+    python export-tensorrt.py --list
+
+    # Export recommended 2x model for live action
+    python export-tensorrt.py --model 2x-liveaction-span -o model.engine
 
     # Export with custom height range
-    python export-tensorrt.py --min-height 360 --max-height 1080
-
-    # Export high-quality model (slower)
-    python export-tensorrt.py --model-type rrdbnet --output hq.engine
+    python export-tensorrt.py --model 2x-liveaction-span --min-height 720 --max-height 1080
 
 Requirements:
     pip install torch onnx tensorrt
@@ -122,68 +129,140 @@ class RRDBNet(nn.Module):
         return out
 
 
-# Model URLs
+# Model registry - models with "onnx_url" skip PyTorch conversion
 MODELS = {
-    "compact": {
+    # 2x models - high quality, 1080p → 4K
+    "2x-liveaction-span": {
+        "description": "Live action TV/film - handles compression, preserves grain",
+        "onnx_url": "https://github.com/jcj83429/upscaling/raw/9332e7d5b07747ff347e5abdc43f8144364de9f7/2xLiveActionV1_SPAN/2xLiveActionV1_SPAN.onnx",
+        "filename": "2xLiveActionV1_SPAN.onnx",
+        "scale": 2,
+        "arch": "span",
+    },
+    "2x-realesrgan": {
+        "description": "Official Real-ESRGAN 2x - general purpose",
+        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth",
+        "filename": "RealESRGAN_x2plus.pth",
+        "scale": 2,
+        "arch": "rrdbnet",
+    },
+    "2x-nomosuni": {
+        "description": "Heavy compression handling (JPG down to quality 40)",
+        "onnx_url": "https://github.com/Phhofm/models/releases/download/2xNomosUni_esrgan_multijpg/2xNomosUni_esrgan_multijpg.onnx",
+        "filename": "2xNomosUni_esrgan_multijpg.onnx",
+        "scale": 2,
+        "arch": "esrgan",
+    },
+    # 4x models - legacy, 720p → 4K or 480p → 1080p
+    "4x-compact": {
+        "description": "Fast 4x upscale - SRVGGNetCompact",
         "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
         "filename": "realesr-general-x4v3.pth",
+        "scale": 4,
+        "arch": "compact",
     },
-    "rrdbnet": {
+    "4x-rrdbnet": {
+        "description": "Highest quality 4x - RRDBNet (slow)",
         "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
         "filename": "RealESRGAN_x4plus.pth",
+        "scale": 4,
+        "arch": "rrdbnet",
     },
+    # Legacy aliases for backwards compatibility
+    "compact": {"alias": "4x-compact"},
+    "rrdbnet": {"alias": "4x-rrdbnet"},
 }
 
 
-def download_model(model_type, cache_dir):
-    """Download model weights."""
-    info = MODELS[model_type]
+def resolve_model(model_name):
+    """Resolve model name, following aliases."""
+    info = MODELS.get(model_name)
+    if info is None:
+        raise ValueError(f"Unknown model: {model_name}")
+    if "alias" in info:
+        return info["alias"], MODELS[info["alias"]]
+    return model_name, info
+
+
+def download_model(model_name, cache_dir):
+    """Download model weights (ONNX or PTH)."""
+    model_name, info = resolve_model(model_name)
     path = os.path.join(cache_dir, info["filename"])
     if os.path.exists(path):
         print(f"Using cached model: {path}")
         return path
 
+    url = info.get("onnx_url") or info.get("url")
     print(f"Downloading {info['filename']}...")
-    urllib.request.urlretrieve(info["url"], path)
+    urllib.request.urlretrieve(url, path)
     print(f"Downloaded to {path}")
     return path
 
 
-def get_model(model_path=None, model_type="compact", cache_dir=None):
-    """Load Real-ESRGAN model."""
+def list_models():
+    """Print available models."""
+    print("\nAvailable models:\n")
+    print("  2x models (1080p → 4K):")
+    for name, info in MODELS.items():
+        if name.startswith("2x-") and "alias" not in info:
+            rec = " (recommended)" if name == "2x-liveaction-span" else ""
+            print(f"    {name:24s} {info['description']}{rec}")
+    print("\n  4x models (720p → 4K):")
+    for name, info in MODELS.items():
+        if name.startswith("4x-") and "alias" not in info:
+            print(f"    {name:24s} {info['description']}")
+    print()
+
+
+def get_model_and_onnx(model_name, cache_dir=None):
+    """Load model and return (model_or_none, onnx_path_or_none, scale).
+
+    For ONNX-based models, returns (None, onnx_path, scale).
+    For PTH-based models, returns (model, None, scale).
+    """
     if cache_dir is None:
-        cache_dir = os.path.expanduser("~/.cache/realesrgan")
+        cache_dir = os.path.expanduser("~/.cache/ai_upscale")
     os.makedirs(cache_dir, exist_ok=True)
 
-    if model_path is None:
-        model_path = download_model(model_type, cache_dir)
+    model_name, info = resolve_model(model_name)
+    scale = info["scale"]
+    arch = info["arch"]
 
-    print(f"Loading model from {model_path}")
+    model_path = download_model(model_name, cache_dir)
+
+    # ONNX-based models - no PyTorch loading needed
+    if "onnx_url" in info:
+        print(f"Using ONNX model directly: {model_path}")
+        print(f"  Architecture: {arch}, Scale: {scale}x")
+        return None, model_path, scale
+
+    # PTH-based models - load PyTorch
+    print(f"Loading PyTorch model from {model_path}")
     state_dict = torch.load(model_path, map_location="cpu", weights_only=True)
     if "params_ema" in state_dict:
         state_dict = state_dict["params_ema"]
     elif "params" in state_dict:
         state_dict = state_dict["params"]
 
-    # Auto-detect model type from state dict
+    # Auto-detect model architecture from state dict
     num_conv_layers = sum(1 for k, v in state_dict.items() if "weight" in k and len(v.shape) == 4)
 
-    if num_conv_layers > 50:  # RRDBNet has many more conv layers
+    if arch == "rrdbnet" or num_conv_layers > 50:
         model = RRDBNet(
-            num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=4
+            num_in_ch=3, num_out_ch=3, num_feat=64, num_block=23, num_grow_ch=32, scale=scale
         )
-        model_name = "RRDBNet"
+        arch_name = "RRDBNet"
     else:
         model = SRVGGNetCompact(
-            num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=num_conv_layers, upscale=4
+            num_in_ch=3, num_out_ch=3, num_feat=64, num_conv=num_conv_layers, upscale=scale
         )
-        model_name = "SRVGGNetCompact"
+        arch_name = "SRVGGNetCompact"
 
     model.load_state_dict(state_dict)
     model.eval()
     params = sum(p.numel() for p in model.parameters()) / 1e6
-    print(f"Loaded {model_name} ({params:.2f}M params)")
-    return model
+    print(f"  Loaded {arch_name} ({params:.2f}M params), Scale: {scale}x")
+    return model, None, scale
 
 
 def export_onnx(model, opt_shape, onnx_path):
@@ -275,29 +354,33 @@ def height_to_shape(h, aspect=16 / 9):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Export Real-ESRGAN to TensorRT")
+    parser = argparse.ArgumentParser(
+        description="Export AI upscaling models to TensorRT engines",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+    )
     parser.add_argument(
         "--model",
         "-m",
         type=str,
-        default=None,
-        help="Path to PyTorch model (.pth). Downloads default if not specified.",
+        default="4x-compact",
+        help="Model name (use --list to see available models)",
     )
+    parser.add_argument("--list", "-l", action="store_true", help="List available models")
+    # Legacy alias for backwards compatibility
     parser.add_argument(
         "--model-type",
         type=str,
-        default="compact",
-        choices=["compact", "rrdbnet"],
-        help="Model type: compact (fast, default) or rrdbnet (slow, highest quality)",
+        default=None,
+        help=argparse.SUPPRESS,  # Hidden, use --model instead
     )
     parser.add_argument(
-        "--min-height", type=int, default=270, help="Minimum input height (default: 270)"
+        "--min-height", type=int, default=None, help="Minimum input height (default: auto)"
     )
     parser.add_argument(
-        "--opt-height", type=int, default=720, help="Optimal input height (default: 720)"
+        "--opt-height", type=int, default=None, help="Optimal input height (default: auto)"
     )
     parser.add_argument(
-        "--max-height", type=int, default=1080, help="Maximum input height (default: 1080)"
+        "--max-height", type=int, default=None, help="Maximum input height (default: auto)"
     )
     parser.add_argument("--output", "-o", type=str, default=None, help="Output engine path")
     parser.add_argument(
@@ -313,33 +396,75 @@ def main():
     )
     args = parser.parse_args()
 
+    if args.list:
+        list_models()
+        return
+
+    # Handle legacy --model-type argument
+    if args.model_type:
+        args.model = args.model_type
+
     if args.fp32:
         args.fp16 = False
 
-    min_h = min(args.min_height, args.max_height)
-    max_h = args.max_height
-    opt_h = min(max(args.opt_height, min_h), max_h)
+    # Get model info for defaults
+    try:
+        model_name, info = resolve_model(args.model)
+    except ValueError as e:
+        print(f"Error: {e}")
+        list_models()
+        return
+
+    scale = info["scale"]
+
+    # Set height defaults based on scale factor
+    if scale == 2:
+        # 2x: input 1080p -> output 4K
+        default_min, default_opt, default_max = 720, 1080, 1080
+    else:
+        # 4x: input 720p -> output 4K, or 480p -> 1080p
+        default_min, default_opt, default_max = 480, 720, 1080
+
+    min_h = args.min_height or default_min
+    opt_h = args.opt_height or default_opt
+    max_h = args.max_height or default_max
+    min_h = min(min_h, max_h)
+    opt_h = min(max(opt_h, min_h), max_h)
+
     min_shape = height_to_shape(min_h)
     opt_shape = height_to_shape(opt_h)
     max_shape = height_to_shape(max_h)
 
     if args.output is None:
         suffix = "_fp16" if args.fp16 else "_fp32"
-        args.output = f"realesrgan_{args.model_type}{suffix}.engine"
+        args.output = f"{model_name}_{opt_h}p{suffix}.engine"
 
     print("=" * 60)
-    print("Real-ESRGAN to TensorRT Export")
+    print("AI Upscale: TensorRT Engine Export")
     print("=" * 60)
-    model = get_model(args.model, args.model_type)
+    print(f"Model: {model_name}")
+    print(f"  {info['description']}")
+    print()
 
-    if args.keep_onnx:
+    model, existing_onnx, scale = get_model_and_onnx(args.model)
+
+    # Determine ONNX path
+    if existing_onnx:
+        # Model already has ONNX - use it directly
+        onnx_path = existing_onnx
+        cleanup_onnx = False
+    elif args.keep_onnx:
         onnx_path = args.output.replace(".engine", ".onnx")
+        cleanup_onnx = False
     else:
         fd, onnx_path = tempfile.mkstemp(suffix=".onnx")
         os.close(fd)
+        cleanup_onnx = True
 
     try:
-        export_onnx(model, opt_shape, onnx_path)
+        # Export to ONNX if needed (PTH-based models only)
+        if model is not None:
+            export_onnx(model, opt_shape, onnx_path)
 
         if args.onnx_only:
             print(f"\n  ONNX saved to: {onnx_path}")
@@ -357,7 +482,7 @@ def main():
             workspace_gb=args.workspace,
         )
     finally:
-        if not args.keep_onnx and not args.onnx_only and os.path.exists(onnx_path):
+        if cleanup_onnx and not args.onnx_only and os.path.exists(onnx_path):
             os.remove(onnx_path)
 
     print()
@@ -365,7 +490,8 @@ def main():
     print("Export complete!")
     print("=" * 60)
     print()
-    print(f"Engine accepts input heights from {args.min_height} to {args.max_height} (16:9)")
+    print(f"Model: {model_name} ({scale}x upscale)")
+    print(f"Engine accepts input heights from {min_h} to {max_h} (16:9)")
     print()
     print("Usage with FFmpeg:")
     print(
