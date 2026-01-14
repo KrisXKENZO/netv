@@ -10,7 +10,6 @@ Available models (use --list to see all):
 
   4x models (720p → 4K, 480p → 1080p):
     - 4x-compact            Fast, good quality (SRVGGNetCompact)
-    - 4x-rrdbnet            Slow, highest quality (RRDBNet)
 
 Usage:
     # List available models
@@ -145,16 +144,16 @@ MODELS = {
         "scale": 4,
         "arch": "compact",
     },
-    "4x-rrdbnet": {
-        "description": "Highest quality 4x - RRDBNet (slow)",
-        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.1.0/RealESRGAN_x4plus.pth",
-        "filename": "RealESRGAN_x4plus.pth",
-        "scale": 4,
-        "arch": "rrdbnet",
-    },
-    # Legacy aliases for backwards compatibility
+    # Legacy alias for backwards compatibility
     "compact": {"alias": "4x-compact"},
-    "rrdbnet": {"alias": "4x-rrdbnet"},
+    # NOTE: 4x-rrdbnet (RRDBNet/RealESRGAN_x4plus) was removed because:
+    # - 1080p engine build fails with OOM even on 32GB VRAM (RTX 5090)
+    # - 720p engine causes "Invalid frame dimensions 0x0" errors during playback
+    # - Model is ~10x larger and ~15x slower than 4x-compact with marginal quality gain
+    #
+    # NOTE: realesrgan (legacy name for 4x-compact) engines removed because:
+    # - Overly smooths faces, removing detail
+    # - Use 4x-compact instead which preserves more texture
 }
 
 

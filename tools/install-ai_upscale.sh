@@ -49,7 +49,7 @@ if [ "$MODEL" = "all" ]; then
     echo "AI Upscale: Building ALL models"
     echo "========================================"
     echo ""
-    for m in 2x-liveaction-span 4x-compact 4x-rrdbnet; do
+    for m in 2x-liveaction-span 4x-compact; do
         echo ">>> Building $m..."
         MODEL="$m" "$0"
         echo ""
@@ -120,7 +120,7 @@ ls -lh "$MODEL_DIR"/${MODEL}_*.engine 2>/dev/null | awk '{print "  " $NF " (" $5
 echo ""
 echo "To use a different model, run:"
 echo "  MODEL=2x-liveaction-span $0"
-echo "  MODEL=4x-rrdbnet $0"
+echo "  MODEL=4x-compact $0"
 echo ""
 echo "Test with:"
 echo "  ffmpeg -init_hw_device cuda=cu -filter_hw_device cu \\"

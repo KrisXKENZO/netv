@@ -564,44 +564,27 @@
       </div>
       <div id="sr-settings" class="{% if not sr_available %}opacity-50{% endif %}">
         <label class="block text-sm font-medium mb-2">AI Upscale</label>
-        <div class="flex flex-wrap gap-4 mb-2">
-          <label class="flex items-center gap-2 cursor-pointer text-sm">
-            <input type="radio" name="sr_mode" value="off" {% if sr_mode == 'off' or not sr_mode %}checked{% endif %}
-                   class="setting-input sr-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500"
-                   {% if not sr_available %}disabled{% endif %}>
-            <span>Off</span>
+        <div class="flex flex-wrap gap-4">
+          <label class="flex items-center gap-2 text-sm">
+            <input type="radio" name="sr_model" value="" {% if not sr_model %}checked{% endif %}
+                   {% if not sr_available %}disabled{% endif %}
+                   class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+            <span>Disabled</span>
           </label>
-          <label class="flex items-center gap-2 cursor-pointer text-sm">
-            <input type="radio" name="sr_mode" value="enhance" {% if sr_mode == 'enhance' %}checked{% endif %}
-                   class="setting-input sr-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500"
-                   {% if not sr_available %}disabled{% endif %}>
-            <span>Enhance All</span>
+          <label class="flex items-center gap-2 text-sm {% if '4x-compact' not in sr_models %}opacity-40{% endif %}">
+            <input type="radio" name="sr_model" value="4x-compact" {% if sr_model == '4x-compact' %}checked{% endif %}
+                   {% if not sr_available or '4x-compact' not in sr_models %}disabled{% endif %}
+                   class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+            <span>4x-compact (quality)</span>
           </label>
-          <label class="flex items-center gap-2 cursor-pointer text-sm">
-            <input type="radio" name="sr_mode" value="upscale_1080" {% if sr_mode == 'upscale_1080' %}checked{% endif %}
-                   class="setting-input sr-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500"
-                   {% if not sr_available %}disabled{% endif %}>
-            <span>Upscale to 1080p</span>
-          </label>
-          <label class="flex items-center gap-2 cursor-pointer text-sm">
-            <input type="radio" name="sr_mode" value="upscale_4k" {% if sr_mode == 'upscale_4k' %}checked{% endif %}
-                   class="setting-input sr-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500"
-                   {% if not sr_available %}disabled{% endif %}>
-            <span>Upscale to 4K</span>
+          <label class="flex items-center gap-2 text-sm {% if '2x-liveaction-span' not in sr_models %}opacity-40{% endif %}">
+            <input type="radio" name="sr_model" value="2x-liveaction-span" {% if sr_model == '2x-liveaction-span' %}checked{% endif %}
+                   {% if not sr_available or '2x-liveaction-span' not in sr_models %}disabled{% endif %}
+                   class="setting-input w-4 h-4 bg-gray-700 border-gray-600 text-blue-500 focus:ring-blue-500">
+            <span>2x-liveaction-span (fast)</span>
           </label>
         </div>
-        {% if sr_models %}
-        <div class="flex items-center gap-2 mb-2">
-          <label class="text-sm text-gray-400">Model:</label>
-          <select name="sr_model" class="setting-input px-2 py-1 bg-gray-700 rounded text-sm focus:outline-none focus:ring-2 focus:ring-blue-500"
-                  {% if not sr_available %}disabled{% endif %}>
-            {% for model in sr_models %}
-            <option value="{{ model }}" {% if sr_model == model %}selected{% endif %}>{{ model }}</option>
-            {% endfor %}
-          </select>
-        </div>
-        {% endif %}
-        <p class="text-xs text-gray-400 mt-1">{% if sr_available %}AI upscaling via TensorRT (requires NVIDIA GPU){% else %}Not available - run <code class="bg-gray-700 px-1 rounded">tools/install-ai_upscale.sh</code> to install{% endif %}</p>
+        <p class="text-xs text-gray-400 mt-1">{% if sr_available %}AI upscaling via TensorRT (requires NVIDIA GPU). Upscales to max resolution then scales down.{% else %}Not available - run <code class="bg-gray-700 px-1 rounded">tools/install-ai_upscale.sh</code> to install{% endif %}</p>
       </div>
       <div>
         <label class="block text-sm font-medium mb-2">VOD Transcode Cache (minutes)</label>

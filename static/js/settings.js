@@ -495,11 +495,11 @@
     }
 
     // Auto-enable "Always" transcode when AI Upscale is enabled
-    const srInputs = container.querySelectorAll('input[name="sr_mode"]');
+    const srInputs = container.querySelectorAll('input[name="sr_model"]');
     const alwaysRadio = container.querySelector('input[name="transcode_mode"][value="always"]');
     srInputs.forEach(sr => {
       sr.addEventListener('change', function() {
-        if (this.value !== 'off' && alwaysRadio && !alwaysRadio.checked) {
+        if (this.value !== '' && alwaysRadio && !alwaysRadio.checked) {
           alwaysRadio.checked = true;
           showFeedback(getFeedbackEl(alwaysRadio), true);
         }

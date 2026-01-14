@@ -230,41 +230,20 @@ def _find_sr_engine(model_name: str, source_height: int) -> tuple[str, int, int,
     return str(engine_path), engine_height, engine_width, scale
 
 
-def _get_available_sr_models() -> list[str]:
-    """Get list of available SR models from engine directory."""
-    import pathlib
+def _build_sr_filter(source_height: int, target_height: int) -> str:
+    """Build AI Upscale filter string if needed. Returns empty string if disabled.
 
+    SR is controlled by sr_model setting - if a model is selected, SR is applied
+    when source height < target height.
+    """
     if not _sr_engine_dir:
-        return []
-
-    engine_dir = pathlib.Path(_sr_engine_dir)
-    if not engine_dir.exists():
-        return []
-
-    models = set()
-    for engine in engine_dir.glob("*_*p_fp16.engine"):
-        name = engine.stem
-        parts = name.rsplit("_", 2)
-        if len(parts) >= 3:
-            models.add(parts[0])
-    return sorted(models)
-
-
-def _build_sr_filter(sr_mode: str, source_height: int, target_height: int) -> str:
-    """Build AI Upscale filter string if needed. Returns empty string if disabled."""
-    if not _sr_engine_dir or sr_mode == "off":
         return ""
 
-    # Get selected model from settings (or auto-detect first available)
+    # Get selected model from settings
     settings = _load_settings()
     model_name = settings.get("sr_model", "")
     if not model_name:
-        # Auto-select first available model (prefer 2x models)
-        available = _get_available_sr_models()
-        if not available:
-            return ""
-        # Prefer 2x models over 4x
-        model_name = next((m for m in available if m.startswith("2x-")), available[0])
+        return ""  # SR disabled (Off selected)
 
     # Find engine for this model and resolution
     engine_info = _find_sr_engine(model_name, source_height)
@@ -274,20 +253,11 @@ def _build_sr_filter(sr_mode: str, source_height: int, target_height: int) -> st
 
     engine_path, engine_height, engine_width, scale = engine_info
 
-    # Determine if SR should be applied based on mode and source resolution
-    apply_sr = False
-
-    if sr_mode == "enhance":
-        # Always apply SR for enhancement (cleanup/sharpen), then scale back
-        apply_sr = True
-    elif sr_mode == "upscale_1080":
-        # Apply SR if source is below 1080p
-        apply_sr = source_height < 1080
-    elif sr_mode == "upscale_4k":
-        # Apply SR if source is below 4K
-        apply_sr = source_height < 2160
-
-    if not apply_sr:
+    # Apply SR when source resolution is below target (upscaling scenario)
+    if target_height and source_height >= target_height:
+        log.info(
+            "SR: skipping %s - source %dp >= target %dp", model_name, source_height, target_height
+        )
         return ""
 
     log.info(
@@ -879,7 +849,6 @@ def _build_video_args(
     max_resolution: str,
     quality: str,
     is_hdr: bool = False,
-    sr_mode: str = "off",
     source_height: int = 0,
 ) -> tuple[list[str], list[str]]:
     """Build video args. Returns (pre_input_args, post_input_args)."""
@@ -891,10 +860,11 @@ def _build_video_args(
 
     max_h = _MAX_RES_HEIGHT.get(max_resolution)
 
-    # Check if SR should be applied (VOD only, discrete GPUs)
+    # Check if SR should be applied (discrete GPUs only)
     sr_filter = ""
-    if sr_mode != "off" and enc_type in ("nvenc", "amf") and _sr_engine_dir:
-        sr_filter = _build_sr_filter(sr_mode, source_height, max_h or 0)
+    sr_model = _load_settings().get("sr_model", "")
+    if sr_model and enc_type in ("nvenc", "amf") and _sr_engine_dir:
+        sr_filter = _build_sr_filter(source_height, max_h or 0)
         # SR requires CPU frames, so disable hw pipeline when SR active
         if sr_filter:
             use_hw_pipeline = False
@@ -1151,7 +1121,6 @@ def build_hls_ffmpeg_cmd(
     quality: str = "high",
     user_agent: str | None = None,
     deinterlace_fallback: bool | None = None,
-    sr_mode: str = "off",
 ) -> list[str]:
     """Build ffmpeg command for HLS transcoding."""
     # Check if we can copy streams directly (compatible codecs, no processing needed)
@@ -1159,7 +1128,7 @@ def build_hls_ffmpeg_cmd(
     needs_scale = media_info and media_info.height > max_h
 
     # SR requires re-encode (can't copy video when SR is active)
-    sr_active = sr_mode != "off" and _sr_engine_dir
+    sr_active = bool(_sr_engine_dir and _load_settings().get("sr_model", ""))
 
     copy_video = bool(
         media_info
@@ -1196,7 +1165,9 @@ def build_hls_ffmpeg_cmd(
     # Deinterlace: use probe result if available, else use fallback setting
     # (fallback defaults to True for live, False for VOD when not explicitly set)
     fallback = deinterlace_fallback if deinterlace_fallback is not None else (not is_vod)
-    deinterlace = media_info.interlaced if media_info else fallback
+    # If probe failed (height=0), don't trust interlaced flag - use fallback
+    probe_valid = media_info is not None and media_info.height > 0
+    deinterlace = media_info.interlaced if probe_valid and media_info else fallback
 
     # Build component arg lists
     video_pre, video_post = _build_video_args(
@@ -1207,7 +1178,6 @@ def build_hls_ffmpeg_cmd(
         max_resolution=max_resolution,
         quality=quality,
         is_hdr=media_info.is_hdr if media_info else False,
-        sr_mode=sr_mode,
         source_height=media_info.height if media_info else 0,
     )
     audio_args = _build_audio_args(

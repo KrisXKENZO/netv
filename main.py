@@ -129,7 +129,7 @@ def get_sr_models() -> list[str]:
     if not SR_ENGINE_DIR.exists():
         return []
     # Engine files are named: {model}_{height}p_fp16.engine
-    # e.g., 2x-liveaction-span_1080p_fp16.engine, realesrgan_720p_fp16.engine
+    # e.g., 4x-compact_1080p_fp16.engine, 2x-liveaction-span_720p_fp16.engine
     models = set()
     for engine in SR_ENGINE_DIR.glob("*_*p_fp16.engine"):
         # Extract model name by removing _{height}p_fp16.engine suffix
@@ -138,7 +138,14 @@ def get_sr_models() -> list[str]:
         parts = name.rsplit("_", 2)  # ["2x-liveaction-span", "1080p", "fp16"]
         if len(parts) >= 3:
             models.add(parts[0])
-    return sorted(models)
+
+    # Sort with 4x-compact first (recommended), then alphabetically
+    def sort_key(m: str) -> tuple[int, str]:
+        if m == "4x-compact":
+            return (0, m)
+        return (1, m)
+
+    return sorted(models, key=sort_key)
 
 
 def is_sr_available() -> bool:
@@ -2113,7 +2120,6 @@ async def settings_page(request: Request, user: Annotated[dict, Depends(require_
             "sr_available": is_sr_available(),
             "sr_models": get_sr_models(),
             "sr_model": server_settings.get("sr_model", ""),
-            "sr_mode": server_settings.get("sr_mode", "off"),
             "all_users": auth.get_users_with_admin(),
             "all_groups": _build_all_groups(),
             "current_user": username,
@@ -2641,14 +2647,10 @@ async def settings_transcode(
     probe_live: Annotated[str | None, Form()] = None,
     probe_movies: Annotated[str | None, Form()] = None,
     probe_series: Annotated[str | None, Form()] = None,
-    sr_mode: Annotated[str, Form()] = "off",
     sr_model: Annotated[str, Form()] = "",
 ):
     settings = load_server_settings()
     settings["transcode_mode"] = transcode_mode
-    settings["sr_mode"] = (
-        sr_mode if sr_mode in ("off", "enhance", "upscale_1080", "upscale_4k") else "off"
-    )
     # Validate sr_model against available models
     available_models = get_sr_models()
     settings["sr_model"] = sr_model if sr_model in available_models else ""
