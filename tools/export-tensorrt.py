@@ -6,9 +6,7 @@ that can be loaded by FFmpeg's TensorRT DNN backend.
 
 Available models (use --list to see all):
   2x models (1080p → 4K):
-    - 2x-liveaction-span    Best for live action TV/film (recommended)
-    - 2x-realesrgan         Official Real-ESRGAN 2x
-    - 2x-nomosuni           Heavy compression handling
+    - 2x-liveaction-span    Best for live action TV/film
 
   4x models (720p → 4K, 480p → 1080p):
     - 4x-compact            Fast, good quality (SRVGGNetCompact)
@@ -18,7 +16,7 @@ Usage:
     # List available models
     python export-tensorrt.py --list
 
-    # Export recommended 2x model for live action
+    # Export 2x model for live action
     python export-tensorrt.py --model 2x-liveaction-span -o model.engine
 
     # Export with custom height range
@@ -134,26 +132,12 @@ MODELS = {
     # 2x models - high quality, 1080p → 4K
     "2x-liveaction-span": {
         "description": "Live action TV/film - handles compression, preserves grain",
-        "onnx_url": "https://github.com/jcj83429/upscaling/raw/9332e7d5b07747ff347e5abdc43f8144364de9f7/2xLiveActionV1_SPAN/2xLiveActionV1_SPAN.onnx",
+        "onnx_url": "https://github.com/jcj83429/upscaling/raw/f73a3a02874360ec6ced18f8bdd8e43b5d7bba57/2xLiveActionV1_SPAN/2xLiveActionV1_SPAN_490000.onnx",
         "filename": "2xLiveActionV1_SPAN.onnx",
         "scale": 2,
         "arch": "span",
     },
-    "2x-realesrgan": {
-        "description": "Official Real-ESRGAN 2x - general purpose",
-        "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.1/RealESRGAN_x2plus.pth",
-        "filename": "RealESRGAN_x2plus.pth",
-        "scale": 2,
-        "arch": "rrdbnet",
-    },
-    "2x-nomosuni": {
-        "description": "Heavy compression handling (JPG down to quality 40)",
-        "onnx_url": "https://github.com/Phhofm/models/releases/download/2xNomosUni_esrgan_multijpg/2xNomosUni_esrgan_multijpg.onnx",
-        "filename": "2xNomosUni_esrgan_multijpg.onnx",
-        "scale": 2,
-        "arch": "esrgan",
-    },
-    # 4x models - legacy, 720p → 4K or 480p → 1080p
+    # 4x models - 720p → 4K or 480p → 1080p
     "4x-compact": {
         "description": "Fast 4x upscale - SRVGGNetCompact",
         "url": "https://github.com/xinntao/Real-ESRGAN/releases/download/v0.2.5.0/realesr-general-x4v3.pth",
